@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: depwatch
+      POSTGRES_PASSWORD: depwatch
+      POSTGRES_DB: depwatch
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U depwatch"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  ingest:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://depwatch:depwatch@postgres:5432/depwatch
+      RAW_DIR: /data/raw
+    volumes:
+      - ./data:/data
+    # One-shot by design: scheduling belongs to cron or the orchestrator,
+    # not to a container that sleeps.
+    command: >
+      sh -c "python -m depwatch.cli init-db &&
+             python -m depwatch.cli ingest express react vue svelte"
+
+volumes:
+  pgdata:

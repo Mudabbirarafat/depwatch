@@ -1,0 +1,16 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# local database and landed payloads
+*.db
+data/
+smoke.db
+
+.env
+.pytest_cache/
+.ruff_cache/
