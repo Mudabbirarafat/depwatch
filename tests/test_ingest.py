@@ -8,7 +8,6 @@ from sqlalchemy import select
 from depwatch.db import session_scope
 from depwatch.ingest import ingest_npm
 from depwatch.models import IngestRun, Package, Quarantine
-from tests.conftest import mock_client
 
 
 def responder(docs: dict, status: int = 200):
@@ -23,7 +22,7 @@ def responder(docs: dict, status: int = 200):
     return handler
 
 
-async def test_ingest_writes_a_package(db_url, tmp_path, registry_doc):
+async def test_ingest_writes_a_package(db_url, tmp_path, registry_doc, mock_client):
     summary = await ingest_npm(
         ["express"],
         client=mock_client(responder({"express": registry_doc})),
@@ -39,7 +38,7 @@ async def test_ingest_writes_a_package(db_url, tmp_path, registry_doc):
         assert package.maintainers == 2
 
 
-async def test_rerun_updates_rather_than_duplicates(db_url, tmp_path, registry_doc):
+async def test_rerun_updates_rather_than_duplicates(db_url, tmp_path, registry_doc, mock_client):
     """Idempotency: the same run twice must leave one row, refreshed."""
     client_args = {"db_url": db_url, "raw_dir": tmp_path / "raw"}
 
@@ -59,7 +58,7 @@ async def test_rerun_updates_rather_than_duplicates(db_url, tmp_path, registry_d
         assert packages[0].latest_version == "5.0.0"
 
 
-async def test_first_seen_survives_a_refresh(db_url, tmp_path, registry_doc):
+async def test_first_seen_survives_a_refresh(db_url, tmp_path, registry_doc, mock_client):
     client_args = {"db_url": db_url, "raw_dir": tmp_path / "raw"}
     await ingest_npm(
         ["express"], client=mock_client(responder({"express": registry_doc})), **client_args
@@ -75,7 +74,7 @@ async def test_first_seen_survives_a_refresh(db_url, tmp_path, registry_doc):
 
 
 async def test_invalid_document_is_quarantined_and_run_continues(
-    db_url, tmp_path, registry_doc
+    db_url, tmp_path, registry_doc, mock_client
 ):
     """One bad package must not cost the good ones."""
     docs = {"express": registry_doc, "broken": {"dist-tags": {"latest": "1.0.0"}}}
@@ -96,7 +95,7 @@ async def test_invalid_document_is_quarantined_and_run_continues(
         assert bad.payload["dist-tags"]["latest"] == "1.0.0"
 
 
-async def test_missing_package_is_counted_as_failed_not_fatal(db_url, tmp_path, registry_doc):
+async def test_missing_package_is_counted_as_failed_not_fatal(db_url, tmp_path, registry_doc, mock_client):
     summary = await ingest_npm(
         ["express", "does-not-exist"],
         client=mock_client(responder({"express": registry_doc})),
@@ -112,7 +111,7 @@ async def test_missing_package_is_counted_as_failed_not_fatal(db_url, tmp_path, 
         assert "does-not-exist" in run.error
 
 
-async def test_raw_payload_is_landed_before_parsing(db_url, tmp_path, registry_doc):
+async def test_raw_payload_is_landed_before_parsing(db_url, tmp_path, registry_doc, mock_client):
     """The raw zone is what makes a parser bug recoverable without re-crawling."""
     raw_dir = tmp_path / "raw"
     await ingest_npm(
@@ -130,7 +129,7 @@ async def test_raw_payload_is_landed_before_parsing(db_url, tmp_path, registry_d
     assert "versions" in landed[0]
 
 
-async def test_run_metadata_is_recorded(db_url, tmp_path, registry_doc):
+async def test_run_metadata_is_recorded(db_url, tmp_path, registry_doc, mock_client):
     await ingest_npm(
         ["express"],
         client=mock_client(responder({"express": registry_doc})),

@@ -7,16 +7,15 @@ import httpx
 import pytest
 
 from depwatch.http import FetchError
-from tests.conftest import mock_client
 
 
-async def test_returns_json_on_success():
+async def test_returns_json_on_success(mock_client):
     client = mock_client(lambda request: httpx.Response(200, json={"ok": True}))
     assert await client.get_json("https://example.test/x") == {"ok": True}
     assert client.attempts == 1
 
 
-async def test_retries_on_429_then_succeeds():
+async def test_retries_on_429_then_succeeds(mock_client):
     calls = {"n": 0}
 
     def handler(request):
@@ -30,7 +29,7 @@ async def test_retries_on_429_then_succeeds():
     assert calls["n"] == 3
 
 
-async def test_retries_on_5xx():
+async def test_retries_on_5xx(mock_client):
     calls = {"n": 0}
 
     def handler(request):
@@ -42,7 +41,7 @@ async def test_retries_on_5xx():
     assert calls["n"] == 2
 
 
-async def test_gives_up_after_max_retries():
+async def test_gives_up_after_max_retries(mock_client):
     calls = {"n": 0}
 
     def handler(request):
@@ -56,7 +55,7 @@ async def test_gives_up_after_max_retries():
     assert calls["n"] == 3  # the first attempt plus two retries
 
 
-async def test_404_is_not_retried():
+async def test_404_is_not_retried(mock_client):
     """A missing package will not appear on the fourth ask."""
     calls = {"n": 0}
 
@@ -71,7 +70,7 @@ async def test_404_is_not_retried():
     assert calls["n"] == 1
 
 
-async def test_connection_errors_are_retried():
+async def test_connection_errors_are_retried(mock_client):
     calls = {"n": 0}
 
     def handler(request):

@@ -28,18 +28,25 @@ def registry_doc():
     }
 
 
-def mock_client(handler, **kwargs) -> RateLimitedClient:
-    """A RateLimitedClient backed by an httpx MockTransport.
+@pytest.fixture
+def mock_client():
+    """Build a RateLimitedClient backed by an httpx MockTransport.
 
-    Sleeps are replaced so retry paths run instantly.
+    Exposed as a fixture rather than an importable helper: importing from
+    conftest only works when the repository root happens to be on sys.path,
+    which is true in a shell and false on a CI runner.
+
+    Sleeps are stubbed so retry paths run instantly.
     """
 
     async def no_sleep(_seconds):
         return None
 
-    transport = httpx.MockTransport(handler)
-    return RateLimitedClient(
-        client=httpx.AsyncClient(transport=transport),
-        sleep=no_sleep,
-        **kwargs,
-    )
+    def _build(handler, **kwargs) -> RateLimitedClient:
+        return RateLimitedClient(
+            client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+            sleep=no_sleep,
+            **kwargs,
+        )
+
+    return _build
