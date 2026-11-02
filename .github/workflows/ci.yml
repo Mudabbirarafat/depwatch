@@ -194,3 +194,79 @@ jobs:
           assert client.get("/gates").status_code == 200
           print("postgres end to end:", body["summary"])
           EOF
+
+  # The dashboard is a real application now, so it is typechecked, linted,
+  # tested and built like one. The build runs `tsc --noEmit` first, so a type
+  # error fails here rather than producing a bundle nobody typechecked.
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test
+      - run: npm run build
+
+  # The image is the deployment: Render builds this exact Dockerfile. A green
+  # `test` job proves the Python works and a green `frontend` job proves the
+  # React works; only this proves the thing that actually ships.
+  image:
+    runs-on: ubuntu-latest
+    needs: [test, frontend]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build the image the platform will build
+        run: docker build -t depwatch:ci .
+
+      - name: It serves the built dashboard and answers the API
+        run: |
+          docker run -d --name depwatch -p 8000:8000 \
+            -e SEED_ON_START=0 \
+            -e DATABASE_URL=sqlite:////tmp/depwatch/ci.db \
+            depwatch:ci
+
+          python - <<'EOF'
+          import json, sys, time, urllib.error, urllib.request
+
+          def get(path):
+              return urllib.request.urlopen(f"http://localhost:8000{path}", timeout=10)
+
+          for attempt in range(40):
+              try:
+                  health = json.load(get("/healthz"))
+                  break
+              except Exception:
+                  time.sleep(1.5)
+          else:
+              sys.exit("the container never answered /healthz")
+
+          print("healthz:", health)
+          assert health["status"] == "ok", health
+
+          # The page must be the built React app. A missing build answers 503
+          # with an explanation, which is useful locally and a failure here.
+          page = get("/").read().decode()
+          assert "/assets/" in page, "the dashboard was not built into the image"
+          print("dashboard served, references its asset bundle")
+
+          # And the hashed bundle itself has to be reachable, not just named.
+          import re
+          asset = re.search(r'/assets/[A-Za-z0-9_.-]+\.js', page)
+          assert asset, page[:400]
+          assert get(asset.group(0)).status == 200
+          print("asset bundle served:", asset.group(0))
+          EOF
+
+      - name: Container logs
+        if: always()
+        run: docker logs depwatch

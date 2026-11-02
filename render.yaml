@@ -7,11 +7,15 @@
 services:
   - type: web
     name: depwatch
-    runtime: python
+    # Docker rather than the native Python runtime, because the dashboard is
+    # a React build and the native runtime has no Node. The Dockerfile builds
+    # the frontend in a first stage and copies the output into the service
+    # image, so there is no committed build output in this repository and no
+    # second deployment to keep alive.
+    runtime: docker
+    dockerfilePath: ./Dockerfile
     plan: free
     region: oregon
-    buildCommand: pip install .
-    startCommand: uvicorn depwatch.api:app --host 0.0.0.0 --port $PORT
 
     # /healthz answers from the database, so this checks the engine and the
     # schema, not just that a process is listening. The app creates its tables
@@ -19,9 +23,6 @@ services:
     healthCheckPath: /healthz
 
     envVars:
-      - key: PYTHON_VERSION
-        value: "3.12.7"
-
       # SQLite on the instance's own disk, deliberately.
       #
       # The free tier gives an ephemeral filesystem and spins the instance down

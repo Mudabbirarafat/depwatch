@@ -22,7 +22,8 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 
@@ -35,7 +36,14 @@ from depwatch.risk import score_package
 from depwatch.seed import prepare_schema, spawn_seed
 
 log = logging.getLogger("depwatch.api")
-INDEX = Path(__file__).parent / "web" / "index.html"
+
+# The dashboard is a React build that lands here from `frontend/`. It is not in
+# the repository - it is generated - so a source checkout has nothing in this
+# directory until the frontend has been built, and the Docker image builds it
+# in an earlier stage.
+WEB_DIR = Path(__file__).parent / "web"
+INDEX = WEB_DIR / "index.html"
+ASSETS = WEB_DIR / "assets"
 
 
 @contextlib.asynccontextmanager
@@ -195,8 +203,36 @@ def _resolve(spec: str | None, package: Package) -> tuple[str | None, str]:
     return package.latest_version, "no-matching-version"
 
 
+# Mounted only when a build exists: mounting a missing directory raises at
+# import, which would make a missing frontend break the API as well as the page.
+if ASSETS.is_dir():
+    app.mount("/assets", StaticFiles(directory=ASSETS), name="assets")
+
+
 @app.get("/", include_in_schema=False)
-def index() -> FileResponse:
+def index() -> Response:
+    """The dashboard, or an explanation of why there isn't one.
+
+    A missing build is a configuration state, not a server fault, so it says
+    what to do about it rather than returning a 500 from a missing file.
+    """
+    if not INDEX.is_file():
+        return JSONResponse(
+            {
+                "detail": (
+                    "The dashboard has not been built. Run `npm ci && npm run build` "
+                    "in frontend/, or use the Docker image, which does it for you."
+                ),
+                "api": {
+                    "analyse": "POST /analyse",
+                    "packages": "GET /packages",
+                    "gates": "GET /gates",
+                    "health": "GET /healthz",
+                    "docs": "GET /docs",
+                },
+            },
+            status_code=503,
+        )
     return FileResponse(INDEX)
 
 

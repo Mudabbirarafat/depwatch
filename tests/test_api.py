@@ -5,10 +5,12 @@ exercise the queries as well as the handlers.
 """
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from depwatch import api
 from depwatch.api import app, names_from_manifest
 from depwatch.db import init_db, session_scope
 from depwatch.models import Advisory, Package
@@ -232,20 +234,36 @@ def test_startup_can_be_told_not_to_touch_the_schema(tmp_path, monkeypatch):
 
 
 def test_the_dashboard_is_served_at_the_root(seeded):
+    """The built React app, if it has been built.
+
+    What the page *does* is tested in frontend/ with Vitest, against the
+    components themselves. What matters here is that FastAPI hands the page
+    over with the right content type and that it references the hashed asset
+    bundle the build produced.
+    """
+    if not api.INDEX.is_file():
+        pytest.skip("frontend not built; run `npm run build` in frontend/")
+
     page = seeded.get("/")
     assert page.status_code == 200
     assert "text/html" in page.headers["content-type"]
-    # The page drives itself from these three endpoints.
-    for endpoint in ("/healthz", "/analyse", "/packages"):
-        assert endpoint in page.text
+    assert "/assets/" in page.text
 
 
-def test_the_dashboard_asks_for_a_page_it_can_report_honestly(seeded):
-    """It shows the worst N and says how many were behind them, so a warehouse
-    larger than one page is never silently cut down to one."""
-    page = seeded.get("/").text
-    assert "/packages?limit=200" in page
-    assert "truncated" in page
+def test_a_missing_frontend_build_explains_itself(seeded, monkeypatch):
+    """A page that was never built is a configuration state, not a fault.
+
+    A 500 from a missing file sends someone looking for a server bug. This
+    says which command to run, and still lists the API's own endpoints, so the
+    service remains usable with no dashboard in front of it.
+    """
+    monkeypatch.setattr(api, "INDEX", Path("does-not-exist") / "index.html")
+
+    response = seeded.get("/")
+    assert response.status_code == 503
+    body = response.json()
+    assert "npm" in body["detail"]
+    assert "POST /analyse" in body["api"].values()
 
 
 def test_packages_orders_before_limiting(seeded):

@@ -12,12 +12,13 @@ maintainer who last shipped years ago — with the reasoning for every score.
 risky example. It runs on a free instance that sleeps when idle, so the first
 request after a quiet spell takes about fifty seconds to wake it.
 
-> **Status:** week five. npm metadata and OSV advisories ingest end to end,
+> **Status:** week six. npm metadata and OSV advisories ingest end to end,
 > manifest ranges resolve to the version you would actually install, the API
 > answers from the warehouse, there is a dashboard in front of it, and it is
 > deployed with migrations, bounded endpoints and a logged ingestion path,
-> and it refreshes on a schedule behind freshness and quality gates. PyPI,
-> GitHub activity signals and dbt marts are next.
+> it refreshes on a schedule behind freshness and quality gates, and the
+> dashboard in front of it is a typed React application. PyPI, GitHub activity
+> signals and dbt marts are next.
 
 ## Pipeline
 
@@ -66,6 +67,18 @@ depwatch ingest lodash express react minimist
 depwatch advisories lodash express react minimist
 depwatch serve
 ```
+
+The dashboard is a separate build. The API works without it — `/` explains how
+to build it rather than returning a 500 — but for the page itself:
+
+```bash
+cd frontend
+npm ci
+npm run build        # lands in src/depwatch/web/, which FastAPI then serves
+npm run dev          # or: Vite on :5173, proxying the API on :8000
+```
+
+Or `docker compose up` / the Dockerfile, which build both halves.
 
 Then:
 
@@ -219,13 +232,44 @@ Stated here rather than discovered by you:
   partly built to avoid. CI proves the Postgres path on every push; switching
   is a `databases:` block and `pip install ".[postgres]"`.
 
+## The dashboard
+
+React, TypeScript, Vite and Tailwind, built into `src/depwatch/web/` and served
+by FastAPI from the same origin as the API.
+
+**One origin, deliberately.** A separate frontend deployment would mean CORS,
+two services to keep alive, and the standing possibility of a page and an API
+that are different versions of each other. Here the build is copied into the
+image, so they ship together or not at all.
+
+**The build output is not in the repository.** It is generated, so it is
+gitignored and produced in the Docker image's first stage. The consequence is
+that a plain `pip install -e .` has no page to serve, which `/` says in as many
+words — a missing build is a configuration state, not a server fault, and a 500
+from a missing file would send someone looking for a bug in the API.
+
+**The gates are on the page.** "Is this data fresh and complete" is the first
+question to ask of any dashboard, and most dashboards make you assume the
+answer. This one reads `/gates` and shows all five.
+
+**It is typed against the API.** The interfaces in `frontend/src/api.ts` mirror
+the Pydantic models by hand — small enough that codegen would cost more than it
+saves — and the tests assert on those shapes, so a backend change that breaks
+them fails the frontend build too.
+
 ## Deployment
 
 Running at **https://depwatch-2oj2.onrender.com**.
 
-`render.yaml` is the deployment: a free Render web service, `pip install .`,
-`uvicorn depwatch.api:app`, health-checked on `/healthz`. Standing up a copy
-is "New > Blueprint" against a fork — there is no console state to reproduce.
+`render.yaml` is the deployment: a free Render web service built from the
+`Dockerfile`, health-checked on `/healthz`. Standing up a copy is
+"New > Blueprint" against a fork — there is no console state to reproduce.
+
+**Docker rather than the native Python runtime**, because the dashboard needs a
+Node build step and the native runtime has no Node. The image is two stages:
+Node builds the frontend, then a Python image copies the output in. Node is
+never installed in the thing that runs, and no build output is committed to get
+around the platform.
 
 Two things in there exist because of how a free instance actually behaves:
 
@@ -304,8 +348,10 @@ written anywhere:
 ## Tests
 
 ```bash
-pytest       # 191 cases
+pytest                      # 191 cases
 ruff check .
+
+cd frontend && npm test     # 21 cases
 ```
 
 Covering registry payload shapes (`repository` as string or object, `license`
@@ -335,6 +381,11 @@ comparison is unreachable locally.
 ## Layout
 
 ```
+frontend/
+  src/api.ts       the API, typed, and the pasted-text parsing
+  src/App.tsx      state, queries and what to show when there is none
+  src/components/  the report table, the gate panel, the form
+
 src/depwatch/
   config.py        settings from the environment
   models.py        packages, advisories, ingest_runs, quarantine
@@ -354,7 +405,7 @@ src/depwatch/
   logs.py          text by default, JSON for a platform to search
   cli.py           migrate, ingest, advisories, seed, refresh, gates, runs, serve
   migrations/      alembic, shipped inside the package
-  web/index.html   the dashboard, dependency-free
+  web/            the built dashboard (generated, not committed)
   sources/npm.py   registry projection and its awkward shapes
   sources/osv.py   advisory projection
 ```

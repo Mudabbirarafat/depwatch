@@ -1,0 +1,28 @@
+# Without this, `COPY frontend/ ./` would drop a local node_modules on top of
+# the one `npm ci` just installed - a different OS's binaries, and hundreds of
+# megabytes of build context to upload before anything starts.
+**/node_modules
+
+# Virtualenvs, caches and build output: all rebuilt inside the image, and all
+# platform-specific.
+.venv
+venv
+**/__pycache__
+*.pyc
+*.egg-info
+build
+dist
+.pytest_cache
+.ruff_cache
+frontend/dist
+src/depwatch/web
+
+# Local data and secrets must never reach a build context.
+*.db
+data
+.env
+.env.*
+
+.git
+.github
+tests

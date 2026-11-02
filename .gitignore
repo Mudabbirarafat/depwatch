@@ -14,3 +14,9 @@ smoke.db
 .env
 .pytest_cache/
 .ruff_cache/
+
+# Frontend: node_modules and the build, which lands inside the Python package
+# so FastAPI can serve it. Generated, so not committed.
+frontend/node_modules/
+frontend/dist/
+src/depwatch/web/
