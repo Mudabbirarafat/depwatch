@@ -14,10 +14,10 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from depwatch.config import settings
-from depwatch.db import session_scope, upsert_packages
+from depwatch.db import session_scope, upsert_advisories, upsert_packages
 from depwatch.http import RateLimitedClient
 from depwatch.models import IngestRun, Quarantine
-from depwatch.sources import npm
+from depwatch.sources import npm, osv
 
 
 def raw_path(root: Path, source: str, run_id: int, when: datetime | None = None) -> Path:
@@ -110,5 +110,70 @@ async def ingest_npm(
         "requested": len(names),
         "succeeded": len(rows),
         "quarantined": len(bad),
+        "failed": len(failures),
+    }
+
+
+async def ingest_advisories(
+    names: list[str],
+    *,
+    client: RateLimitedClient | None = None,
+    db_url: str | None = None,
+    raw_dir: Path | None = None,
+    ecosystem: str = "npm",
+) -> dict:
+    """Pull advisories from OSV for the given packages.
+
+    OSV answers per package, so a package with no advisories is a legitimate
+    empty result rather than a failure - most packages are clean, and treating
+    that as an error would make every run look broken.
+    """
+    owns_client = client is None
+    client = client or RateLimitedClient()
+    root = Path(raw_dir or settings.raw_dir)
+
+    with session_scope(db_url) as session:
+        run = IngestRun(source="osv", requested=len(names))
+        session.add(run)
+        session.flush()
+        run_id = run.id
+
+    responses: dict[str, object] = {}
+    try:
+        for name in names:
+            try:
+                responses[name] = await client.post_json(
+                    settings.osv_api, osv.query_payload(name, ecosystem)
+                )
+            except Exception as exc:  # noqa: BLE001 - recorded on the run
+                responses[name] = exc
+    finally:
+        if owns_client:
+            await client.aclose()
+
+    bodies = {n: b for n, b in responses.items() if not isinstance(b, Exception)}
+    failures = {n: b for n, b in responses.items() if isinstance(b, Exception)}
+
+    write_raw(raw_path(root, "osv", run_id), [{"package": n, "response": b} for n, b in bodies.items()])
+
+    rows: list[dict] = []
+    for name, body in bodies.items():
+        rows.extend(osv.parse_response(body, package_name=name, ecosystem=ecosystem))
+
+    with session_scope(db_url) as session:
+        written = upsert_advisories(session, rows)
+        run = session.get(IngestRun, run_id)
+        run.succeeded = written
+        run.failed = len(failures)
+        run.finished_at = datetime.now(UTC)
+        run.status = "succeeded" if not failures else "partial"
+        if failures:
+            run.error = "; ".join(f"{n}: {e}" for n, e in list(failures.items())[:5])
+
+    return {
+        "run_id": run_id,
+        "requested": len(names),
+        "advisories": written,
+        "packages_clean": sum(1 for n in bodies if not any(r["package_name"] == n for r in rows)),
         "failed": len(failures),
     }

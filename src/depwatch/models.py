@@ -78,3 +78,32 @@ class Quarantine(Base):
     reason: Mapped[str] = mapped_column(Text)
     payload: Mapped[dict] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Advisory(Base):
+    """A published security advisory affecting a package.
+
+    Keyed on (ecosystem, package_name, osv_id) so re-querying OSV refreshes a
+    known advisory rather than accumulating copies of it. Severity is taken
+    from database_specific.severity, which is the word GitHub assigns
+    (LOW / MODERATE / HIGH / CRITICAL); the CVSS vector is kept alongside for
+    anyone who wants to recompute it.
+    """
+
+    __tablename__ = "advisories"
+    __table_args__ = (
+        UniqueConstraint("ecosystem", "package_name", "osv_id", name="uq_advisory"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ecosystem: Mapped[str] = mapped_column(String(32))
+    package_name: Mapped[str] = mapped_column(String(255))
+    osv_id: Mapped[str] = mapped_column(String(64))
+
+    severity: Mapped[str | None] = mapped_column(String(16))
+    cvss_vector: Mapped[str | None] = mapped_column(String(128))
+    summary: Mapped[str | None] = mapped_column(Text)
+    aliases: Mapped[list | None] = mapped_column(JSON)
+    fixed_version: Mapped[str | None] = mapped_column(String(64))
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -37,10 +37,26 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -e .
-      - name: Ingest a few real packages
+      - name: Ingest and analyse real packages
         env:
           DATABASE_URL: sqlite:///smoke.db
         run: |
           python -m depwatch.cli init-db
-          python -m depwatch.cli ingest express react @types/node
+          python -m depwatch.cli ingest express react lodash
+          python -m depwatch.cli advisories express react lodash
           python -m depwatch.cli runs
+          # Prove the whole chain, not just ingestion: the API must answer
+          # from what the run just wrote.
+          python - <<'EOF'
+          import json
+          from fastapi.testclient import TestClient
+          from depwatch.api import app
+          c = TestClient(app)
+          health = c.get("/healthz").json()
+          assert health["packages"] == 3, health
+          assert health["advisories"] > 0, health
+          body = c.post("/analyse", json={"names": ["express", "react", "lodash"]}).json()
+          assert body["summary"]["analysed"] == 3, body
+          assert not body["unknown"], body
+          print(json.dumps(body["summary"]))
+          EOF

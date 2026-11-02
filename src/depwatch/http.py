@@ -1,13 +1,16 @@
 """HTTP client with rate limiting and backoff.
 
-Public registries will rate limit you, and a pipeline that falls over the first
-time it sees a 429 is not a pipeline. This wraps httpx with:
+Public APIs will rate limit you, and a pipeline that falls over the first time
+it sees a 429 is not a pipeline. This wraps httpx with:
 
 * a concurrency bound, so one run cannot open fifty sockets at a registry;
 * retries on 429 and 5xx with exponential backoff and jitter;
 * honouring Retry-After when the server sends it, because guessing is rude.
 
 4xx other than 429 are not retried - they will not get better.
+
+GET and POST share one request path so the retry policy cannot drift between
+them: npm is a GET API and OSV is a POST API, and both need the same care.
 """
 
 import asyncio
@@ -54,7 +57,7 @@ class RateLimitedClient:
         self._sleep = sleep
         self.attempts = 0
 
-    async def get_json(self, url: str) -> Any:
+    async def _request_json(self, method: str, url: str, json_body: Any | None = None) -> Any:
         last_status: int | None = None
         last_message = "no attempts made"
 
@@ -63,7 +66,7 @@ class RateLimitedClient:
             async with self._sem:
                 self.attempts += 1
                 try:
-                    response = await self._client.get(url)
+                    response = await self._client.request(method, url, json=json_body)
                 except httpx.RequestError as exc:
                     last_status, last_message = None, str(exc)
                 else:
@@ -79,6 +82,12 @@ class RateLimitedClient:
                 await self._sleep(_backoff_seconds(attempt, retry_after))
 
         raise FetchError(url, last_status, last_message)
+
+    async def get_json(self, url: str) -> Any:
+        return await self._request_json("GET", url)
+
+    async def post_json(self, url: str, payload: Any) -> Any:
+        return await self._request_json("POST", url, json_body=payload)
 
     async def aclose(self) -> None:
         await self._client.aclose()

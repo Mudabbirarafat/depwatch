@@ -17,7 +17,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session, sessionmaker
 
 from depwatch.config import settings
-from depwatch.models import Base, Package
+from depwatch.models import Advisory, Base, Package
 
 _engine = None
 _Session = None
@@ -71,6 +71,32 @@ def upsert_packages(session: Session, rows: Iterable[dict]) -> int:
     }
     stmt = stmt.on_conflict_do_update(
         index_elements=[Package.ecosystem, Package.name], set_=updatable
+    )
+    session.execute(stmt)
+    return len(rows)
+
+
+def upsert_advisories(session: Session, rows: Iterable[dict]) -> int:
+    """Insert or refresh advisories, keyed on (ecosystem, package_name, osv_id).
+
+    Re-querying OSV must refresh what is known about an advisory - severity
+    gets revised, fixes get published - without creating a second copy of it.
+    """
+    rows = [dict(r) for r in rows]
+    if not rows:
+        return 0
+
+    dialect = session.get_bind().dialect.name
+    insert = pg_insert if dialect == "postgresql" else sqlite_insert
+    stmt = insert(Advisory).values(rows)
+    updatable = {
+        c.name: getattr(stmt.excluded, c.name)
+        for c in Advisory.__table__.columns
+        if c.name not in {"id", "ecosystem", "package_name", "osv_id"}
+    }
+    stmt = stmt.on_conflict_do_update(
+        index_elements=[Advisory.ecosystem, Advisory.package_name, Advisory.osv_id],
+        set_=updatable,
     )
     session.execute(stmt)
     return len(rows)

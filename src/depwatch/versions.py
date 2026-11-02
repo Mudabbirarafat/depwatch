@@ -1,0 +1,63 @@
+"""Version comparison, only as much as the risk model needs.
+
+The question asked here is narrow: *is this advisory still a problem for the
+version we would install?* That is answered by comparing the advisory's fixed
+version against the package's current version.
+
+Full semver is subtle - build metadata, prerelease precedence, ranges - so
+this deliberately handles the common `MAJOR.MINOR.PATCH[-prerelease]` shape and
+is explicit about what it cannot parse. When a version cannot be compared the
+caller is told so, and the risk model then counts the advisory rather than
+quietly exonerating the package. Failing towards "still risky" is the only
+safe direction for a security signal.
+"""
+
+import re
+
+_VERSION = re.compile(
+    r"^\s*v?(?P<major>\d+)\.(?P<minor>\d+)(?:\.(?P<patch>\d+))?"
+    r"(?:-(?P<prerelease>[0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?\s*$"
+)
+
+
+def parse(version: str | None) -> tuple[int, int, int, bool] | None:
+    """(major, minor, patch, is_release) or None when it cannot be compared.
+
+    `is_release` is False for prereleases, which sort below the matching
+    release: 4.0.0-rc1 precedes 4.0.0.
+    """
+    if not isinstance(version, str):
+        return None
+    match = _VERSION.match(version)
+    if not match:
+        return None
+    return (
+        int(match["major"]),
+        int(match["minor"]),
+        int(match["patch"] or 0),
+        match["prerelease"] is None,
+    )
+
+
+def is_at_least(candidate: str | None, minimum: str | None) -> bool | None:
+    """Is `candidate` >= `minimum`? None when either cannot be parsed."""
+    left, right = parse(candidate), parse(minimum)
+    if left is None or right is None:
+        return None
+    return left >= right
+
+
+def advisory_applies(fixed_version: str | None, current_version: str | None) -> bool:
+    """Does an advisory still affect `current_version`?
+
+    * No published fix -> it applies, whatever you are running.
+    * Current version at or beyond the fix -> it does not apply.
+    * Anything unparseable -> it applies, because guessing "safe" on a
+      security signal is the wrong way to be wrong.
+    """
+    if not fixed_version:
+        return True
+    at_least = is_at_least(current_version, fixed_version)
+    if at_least is None:
+        return True
+    return not at_least

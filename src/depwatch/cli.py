@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from depwatch.db import init_db, session_scope
-from depwatch.ingest import ingest_npm
+from depwatch.ingest import ingest_advisories, ingest_npm
 from depwatch.models import IngestRun
 
 
@@ -40,6 +40,25 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     # A run that could not fetch anything is a failure worth a non-zero exit,
     # so a scheduled job surfaces red instead of quietly doing nothing.
     return 1 if summary["succeeded"] == 0 else 0
+
+
+def cmd_advisories(args: argparse.Namespace) -> int:
+    names = list(args.names)
+    if args.from_manifest:
+        names.extend(names_from_manifest(Path(args.from_manifest)))
+    names = sorted(set(names))
+    if not names:
+        print("nothing to query: pass package names or --from-manifest", file=sys.stderr)
+        return 2
+    print(json.dumps(asyncio.run(ingest_advisories(names)), indent=2))
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    import uvicorn
+
+    uvicorn.run("depwatch.api:app", host=args.host, port=args.port, reload=args.reload)
+    return 0
 
 
 def cmd_runs(args: argparse.Namespace) -> int:
@@ -77,6 +96,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_ingest.add_argument("names", nargs="*", help="package names")
     p_ingest.add_argument("--from-manifest", help="read names from a package.json")
     p_ingest.set_defaults(func=cmd_ingest)
+
+    p_adv = sub.add_parser("advisories", help="pull OSV advisories for packages")
+    p_adv.add_argument("names", nargs="*")
+    p_adv.add_argument("--from-manifest", help="read names from a package.json")
+    p_adv.set_defaults(func=cmd_advisories)
+
+    p_serve = sub.add_parser("serve", help="run the API")
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.add_argument("--reload", action="store_true")
+    p_serve.set_defaults(func=cmd_serve)
 
     p_runs = sub.add_parser("runs", help="show recent ingest runs")
     p_runs.add_argument("--limit", type=int, default=10)
