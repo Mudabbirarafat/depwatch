@@ -240,6 +240,14 @@ def test_the_dashboard_is_served_at_the_root(seeded):
         assert endpoint in page.text
 
 
+def test_the_dashboard_asks_for_a_page_it_can_report_honestly(seeded):
+    """It shows the worst N and says how many were behind them, so a warehouse
+    larger than one page is never silently cut down to one."""
+    page = seeded.get("/").text
+    assert "/packages?limit=200" in page
+    assert "truncated" in page
+
+
 def test_packages_orders_before_limiting(seeded):
     """The bug this replaced returned an arbitrary slice and called it the worst.
 

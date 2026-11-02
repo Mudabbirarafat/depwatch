@@ -136,6 +136,7 @@ function render(body) {
       ${body.summary.analysed} analysed ·
       ${body.summary.high} high · ${body.summary.medium} medium · ${body.summary.low} low
       ${body.summary.unresolved_ranges ? " · " + body.summary.unresolved_ranges + " range(s) not resolvable" : ""}
+      ${body.summary.truncated ? " · showing the worst " + body.summary.analysed + " of " + body.summary.truncated : ""}
       ${body.unknown.length ? " · not ingested: <code>" + esc(body.unknown.join(", ")) + "</code>" : ""}
     </p>`;
 }
@@ -176,13 +177,16 @@ $("sample").addEventListener("click", () => {
 });
 $("browse").addEventListener("click", async () => {
   $("out").innerHTML = `<p class="empty">loading…</p>`;
-  const r = await fetch("/packages");
+  // The endpoint sorts the whole ecosystem and then pages, so this is the
+  // worst 200 rather than an arbitrary 200. `total` says what was behind it.
+  const r = await fetch("/packages?limit=200");
   const body = await r.json();
   render({
     analysed: body.packages.map((p) => ({ ...p, requested_range: null, scored_version: p.latest_version })),
     unknown: [],
     summary: {
       analysed: body.count,
+      truncated: body.total > body.count ? body.total : 0,
       high: body.packages.filter((p) => p.band === "high").length,
       medium: body.packages.filter((p) => p.band === "medium").length,
       low: body.packages.filter((p) => p.band === "low").length,
