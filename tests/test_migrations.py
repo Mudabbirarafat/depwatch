@@ -81,3 +81,15 @@ def test_the_revisions_live_inside_the_package(tmp_path):
     assert (MIGRATIONS_DIR / "env.py").is_file()
     revisions = list((MIGRATIONS_DIR / "versions").glob("*.py"))
     assert revisions, "no revision files found"
+
+
+def test_upgrade_creates_the_directory_for_a_sqlite_file(tmp_path):
+    """Found by running `depwatch migrate` against a path whose folder did not
+    exist: SQLite reports "unable to open database file", which reads as a
+    broken configuration rather than a missing directory. Every route to a
+    schema goes through this function, so it is the right place to handle it."""
+    nested = tmp_path / "var" / "lib" / "depwatch" / "depwatch.db"
+    upgrade_to_head(f"sqlite:///{nested}")
+
+    assert nested.exists()
+    assert EXPECTED_TABLES <= set(inspect(create_engine(f"sqlite:///{nested}")).get_table_names())

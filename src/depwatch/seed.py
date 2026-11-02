@@ -18,7 +18,7 @@ import os
 from sqlalchemy import func, select
 
 from depwatch.config import Settings
-from depwatch.db import engine, ensure_parent_directory, session_scope
+from depwatch.db import engine, session_scope
 from depwatch.ingest import ingest_advisories, ingest_npm
 from depwatch.migrate import upgrade_to_head
 from depwatch.models import Package
@@ -87,9 +87,8 @@ def prepare_schema() -> None:
         log.info("INIT_DB_ON_START is off, leaving the schema alone")
         return
     url = Settings.from_env().database_url
-    ensure_parent_directory(url)
     engine(url)  # bind before anything queries
-    upgrade_to_head(url)
+    upgrade_to_head(url)  # creates the directory too, if SQLite needs one
 
 
 async def seed_if_empty() -> None:
