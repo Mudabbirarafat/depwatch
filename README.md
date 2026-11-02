@@ -235,7 +235,7 @@ application code changes.
 ## Tests
 
 ```bash
-pytest       # 158 cases
+pytest       # 160 cases
 ruff check .
 ```
 
