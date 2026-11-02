@@ -10,8 +10,18 @@ os.environ.setdefault("INIT_DB_ON_START", "0")
 import httpx
 import pytest
 
+from depwatch import ratelimit
 from depwatch.db import init_db
 from depwatch.http import RateLimitedClient
+
+
+@pytest.fixture(autouse=True)
+def _fresh_rate_limiter():
+    """The limiter is process-wide, so without this the suite's own requests
+    accumulate across tests and a later test gets a 429 from an earlier one."""
+    ratelimit.reset()
+    yield
+    ratelimit.reset()
 
 
 @pytest.fixture

@@ -21,12 +21,12 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, Query, Request
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 
-from depwatch import ranges
+from depwatch import logs, ranges, ratelimit
 from depwatch.db import session_scope
 from depwatch.models import Advisory, IngestRun, Package
 from depwatch.risk import score_package
@@ -38,6 +38,7 @@ INDEX = Path(__file__).parent / "web" / "index.html"
 
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
+    logs.configure()
     # The schema is created before the port opens, because /healthz counts
     # rows and cannot answer on a database with no tables.
     prepare_schema()
@@ -58,15 +59,72 @@ app = FastAPI(
     version="0.3.0",
 )
 
+@app.middleware("http")
+async def enforce_rate_limit(request: Request, call_next):
+    """Turn away a client that is asking faster than the limit allows.
+
+    Written as middleware rather than a route dependency so a route added
+    later is covered by default instead of being remembered about.
+    """
+    if request.url.path in ratelimit.EXEMPT_PATHS:
+        return await call_next(request)
+
+    key = ratelimit.client_key(
+        request.headers.get("x-forwarded-for"),
+        request.client.host if request.client else None,
+    )
+    allowed, retry_after = ratelimit.limiter().check(key)
+    if not allowed:
+        return JSONResponse(
+            {"detail": "Too many requests. The limit is per instance, per minute."},
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
+    return await call_next(request)
+
+
 MANIFEST_KEYS = ("dependencies", "devDependencies", "peerDependencies")
+
+# A public endpoint with no ceiling is a liability: every name in a request
+# becomes a row in an IN clause and a package to score, so a manifest with
+# fifty thousand dependencies would be accepted and run as one enormous query.
+# 200 covers any real package.json - the largest in common use are a few
+# hundred - and keeps the IN clause well inside SQLite's parameter limit.
+MAX_PACKAGES_PER_REQUEST = 200
+
+# The column is String(255); accepting longer would only fail at the insert.
+MAX_NAME_LENGTH = 255
+
+# /packages scores every package before it can order them, so the page size
+# bounds the response, not the work. See list_packages.
+MAX_PAGE = 200
 
 
 class AnalyseRequest(BaseModel):
-    names: list[str] = Field(default_factory=list)
+    names: list[str] = Field(default_factory=list, max_length=MAX_PACKAGES_PER_REQUEST)
     manifest: dict | None = Field(
         default=None, description="A package.json; dependency names and ranges are read"
     )
-    ecosystem: str = "npm"
+    ecosystem: str = Field("npm", max_length=32)
+
+    @model_validator(mode="after")
+    def _within_limits(self) -> "AnalyseRequest":
+        """Bound the request after the manifest is merged, not just before.
+
+        `names` and `manifest` are each capped on their own by the field
+        limits, but a request can carry both, so the total is what matters.
+        """
+        requested = set(self.names) | set(requirements_from_manifest(self.manifest or {}))
+        if len(requested) > MAX_PACKAGES_PER_REQUEST:
+            raise ValueError(
+                f"{len(requested)} packages requested; the limit is {MAX_PACKAGES_PER_REQUEST}"
+            )
+        too_long = [n for n in requested if len(n) > MAX_NAME_LENGTH]
+        if too_long:
+            raise ValueError(
+                f"package name longer than {MAX_NAME_LENGTH} characters: {too_long[0][:60]!r}"
+            )
+        return self
 
 
 class PackageReport(BaseModel):
@@ -250,11 +308,37 @@ def analyse(request: AnalyseRequest) -> AnalyseResponse:
 
 
 @app.get("/packages")
-def list_packages(limit: int = 50) -> dict:
-    """Everything known, worst first - the dashboard's backing query."""
+def list_packages(
+    limit: int = Query(50, ge=1, le=MAX_PAGE),
+    ecosystem: str = Query("npm", max_length=32),
+) -> dict:
+    """Everything known, worst first - the dashboard's backing query.
+
+    Scoring is a Python function, so the ordering cannot be pushed into SQL:
+    every package has to be scored before the worst of them can be known.
+    Sorting therefore happens *before* the limit is applied. Limiting first -
+    which this did until it was measured - returns an arbitrary slice of the
+    table, sorts those few among themselves, and calls the result the worst
+    packages. At ten packages the two are indistinguishable, which is exactly
+    why it survived.
+
+    The consequence is that the page size bounds the response and not the
+    work: a request is O(packages in the ecosystem) whatever the limit says.
+    That is affordable at this size and is the reason the next step is a
+    materialised score column rather than a larger page.
+    """
     with session_scope() as session:
-        packages = session.scalars(select(Package).limit(limit)).all()
-        advisories = session.scalars(select(Advisory)).all()
+        packages = session.scalars(
+            select(Package).where(Package.ecosystem == ecosystem).order_by(Package.name)
+        ).all()
+        # Scoped to the ecosystem being scored. Fetching the whole advisory
+        # table regardless of ecosystem was the other half of the same bug.
+        # Filtering by the package names instead would be narrower still, but
+        # every package in the ecosystem is being scored anyway, and a list of
+        # names that long runs into SQLite's bound-parameter limit.
+        advisories = session.scalars(
+            select(Advisory).where(Advisory.ecosystem == ecosystem)
+        ).all()
 
         by_package: dict[str, list[dict]] = {}
         for advisory in advisories:
@@ -273,5 +357,6 @@ def list_packages(limit: int = 50) -> dict:
             result = score_package(row, found)
             rows.append({**row, "advisories": len(found), **result.as_dict()})
 
-    rows.sort(key=lambda r: r["score"], reverse=True)
-    return {"count": len(rows), "packages": rows}
+    rows.sort(key=lambda r: (-r["score"], r["name"]))
+    page = rows[:limit]
+    return {"count": len(page), "total": len(rows), "packages": page}

@@ -9,6 +9,7 @@ dependencies = [
     "SQLAlchemy>=2.0",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
+    "alembic>=1.13",
 ]
 
 [project.optional-dependencies]
@@ -26,7 +27,9 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-depwatch = ["web/*.html"]
+# The migrations ship with the code: the deployed instance runs `upgrade head`
+# on boot and can only do that if the revision files are installed.
+depwatch = ["web/*.html", "migrations/*.py", "migrations/*.mako", "migrations/versions/*.py"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

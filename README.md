@@ -12,10 +12,11 @@ maintainer who last shipped years ago — with the reasoning for every score.
 risky example. It runs on a free instance that sleeps when idle, so the first
 request after a quiet spell takes about fifty seconds to wake it.
 
-> **Status:** week three. npm metadata and OSV advisories ingest end to end,
+> **Status:** week four. npm metadata and OSV advisories ingest end to end,
 > manifest ranges resolve to the version you would actually install, the API
-> answers from the warehouse, and there is a dashboard in front of it. PyPI,
-> GitHub activity signals and dbt marts are next.
+> answers from the warehouse, there is a dashboard in front of it, and it is
+> deployed with migrations, bounded endpoints and a logged ingestion path.
+> PyPI, GitHub activity signals and dbt marts are next.
 
 ## Pipeline
 
@@ -52,7 +53,7 @@ No services required — it defaults to SQLite.
 ```bash
 python -m venv .venv && .venv/Scripts/activate   # Windows
 pip install -e ".[dev]"
-depwatch init-db
+depwatch migrate
 depwatch ingest lodash express react minimist
 depwatch advisories lodash express react minimist
 depwatch serve
@@ -135,6 +136,49 @@ which version it scored and how it got there (`resolved`, `latest`,
 `unsupported-range`, `no-matching-version`). Prereleases are excluded, because
 npm will not install `5.4.0-beta.1` for `^5.0.0` unless you ask for it by name.
 
+**Ordering happens before limiting.** This one was a bug too. `/packages`
+took the first fifty rows the database happened to return, scored those,
+sorted them among themselves and presented the result as the worst packages in
+the warehouse. At ten packages the right and wrong behaviours are identical,
+which is why it survived three weeks. Sorting now covers every package in the
+ecosystem and the limit only trims the response — so a page costs
+O(packages) regardless of its size. That is the honest cost, and the reason a
+materialised score column is the next step rather than a bigger page limit.
+
+**The schema has a version.** `create_all()` built the tables until week four,
+which works exactly once: the first change against a live database would have
+been a manual `ALTER` in production. Alembic owns the schema now, the deployed
+instance runs `upgrade head` before it opens its port, and the revisions live
+*inside* the package so an installed wheel can find them — a migration
+directory that does not ship is a migration that silently does nothing. Tests
+still build their schema with `create_all()` because it is faster, and a drift
+test compares the two so they cannot diverge quietly.
+
+**The public endpoints are bounded.** `/analyse` accepts at most 200 packages,
+counted after the manifest is merged rather than per field, and refuses a name
+longer than the column. `/packages` caps its page size. Both sit behind a
+per-client rate limit, which is in-process and therefore per-instance — a real
+limitation, stated rather than hidden, and still better than an endpoint that
+will score every package in the warehouse as fast as a loop can ask. `/healthz`
+is exempt, because an instance that rate-limits its own health check looks
+dead to the platform.
+
+**The quiet failures are logged.** A quarantined record, a package that would
+not fetch, a retry against a throttling registry: all three are non-fatal by
+design, which is exactly why they need to be visible. The run returns
+reasonable-looking counts and carries on, so the log is the only place the
+detail exists. Output is plain text by default and JSON under
+`LOG_FORMAT=json`, because a platform's log search is only useful when the
+fields are fields.
+
+**There are no hand-written indexes, and that is a finding rather than an
+omission.** The unique constraints on `(ecosystem, name)` and
+`(ecosystem, package_name, osv_id)` index exactly the columns every query
+filters and orders by; `EXPLAIN QUERY PLAN` confirms all four hot queries use
+them, and `/healthz` reads the newest run straight off the primary key without
+a sort. Adding more would cost writes and buy nothing. A test asserts the plans
+so that stays true.
+
 **Scoring is a pure function.** No database, no network, no clock except the
 one passed in. Every weight in `risk.py` is stated and directly tested, so you
 can disagree with a specific rule rather than with a black box.
@@ -191,7 +235,7 @@ application code changes.
 ## Tests
 
 ```bash
-pytest       # 118 cases
+pytest       # 158 cases
 ruff check .
 ```
 
@@ -200,6 +244,11 @@ as string, object or list, missing fields, unparseable timestamps), OSV
 parsing, the retry policy (429, 5xx, connection errors, no retry on 404,
 giving up at the limit), idempotent reruns, quarantine, raw landing, run
 metadata, every scoring rule, version comparison, and the API end to end.
+
+Also the operational behaviour, because that is where the bugs were: the
+startup ordering both ways round, migrations against the models for drift,
+the sliding rate-limit window, the query plans of every hot query, and that
+the non-fatal failures actually reach the log.
 
 CI additionally runs a live ingest against the real npm registry and OSV, so a
 schema change at either fails the build instead of silently corrupting a mart.
@@ -218,7 +267,11 @@ src/depwatch/
   ranges.py        resolving a manifest range to an installed version
   api.py           /analyse, /packages, /healthz, the dashboard
   seed.py          filling a fresh instance, without blocking its boot
-  cli.py           init-db, ingest, advisories, seed, runs, serve
+  migrate.py       upgrade head, from the CLI or from the booting server
+  ratelimit.py     a sliding window per client; /healthz exempt
+  logs.py          text by default, JSON for a platform to search
+  cli.py           migrate, ingest, advisories, seed, runs, serve
+  migrations/      alembic, shipped inside the package
   web/index.html   the dashboard, dependency-free
   sources/npm.py   registry projection and its awkward shapes
   sources/osv.py   advisory projection
@@ -226,7 +279,9 @@ src/depwatch/
 
 ## Next
 
-1. PyPI source behind the same interface
-2. GitHub activity: last commit, contributors, issue responsiveness
-3. dbt marts with freshness and quality gates
-4. Scheduled runs with alerting on a failed gate
+1. Scheduled ingestion, so the warehouse refreshes on a timer rather than
+   whenever the instance happens to restart
+2. A materialised score, so `/packages` stops being O(packages) per request
+3. PyPI source behind the same interface
+4. GitHub activity: last commit, contributors, issue responsiveness
+5. dbt marts with freshness and quality gates, failing the run on a breach

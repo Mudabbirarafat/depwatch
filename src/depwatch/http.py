@@ -14,12 +14,15 @@ them: npm is a GET API and OSV is a POST API, and both need the same care.
 """
 
 import asyncio
+import logging
 import random
 from typing import Any
 
 import httpx
 
 from depwatch.config import settings
+
+log = logging.getLogger("depwatch.http")
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
 
@@ -79,8 +82,31 @@ class RateLimitedClient:
                     retry_after = response.headers.get("Retry-After")
 
             if attempt < self._max_retries:
-                await self._sleep(_backoff_seconds(attempt, retry_after))
+                wait = _backoff_seconds(attempt, retry_after)
+                log.warning(
+                    "retrying request",
+                    extra={
+                        "url": url,
+                        "method": method,
+                        "status": last_status,
+                        "attempt": attempt + 1,
+                        "of": self._max_retries + 1,
+                        "wait_seconds": round(wait, 2),
+                        "retry_after_header": retry_after,
+                    },
+                )
+                await self._sleep(wait)
 
+        log.error(
+            "giving up on request",
+            extra={
+                "url": url,
+                "method": method,
+                "status": last_status,
+                "attempts": self._max_retries + 1,
+                "last_message": last_message[:200],
+            },
+        )
         raise FetchError(url, last_status, last_message)
 
     async def get_json(self, url: str) -> Any:

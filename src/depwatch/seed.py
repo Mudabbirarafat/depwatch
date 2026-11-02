@@ -18,8 +18,9 @@ import os
 from sqlalchemy import func, select
 
 from depwatch.config import Settings
-from depwatch.db import init_db, session_scope
+from depwatch.db import engine, ensure_parent_directory, session_scope
 from depwatch.ingest import ingest_advisories, ingest_npm
+from depwatch.migrate import upgrade_to_head
 from depwatch.models import Package
 
 log = logging.getLogger("depwatch.seed")
@@ -75,6 +76,9 @@ def prepare_schema() -> None:
     failed because the database it was handed is empty. This one is allowed to
     block startup: it is one local round trip, not two external APIs.
 
+    It runs the migrations rather than `create_all()`, so the deployed schema
+    has a version and the next change is a revision instead of a manual ALTER.
+
     The URL is read from the environment here rather than taken from the
     import-time settings, because at startup the platform's environment is the
     authority on where the database is.
@@ -82,7 +86,10 @@ def prepare_schema() -> None:
     if not schema_init_enabled():
         log.info("INIT_DB_ON_START is off, leaving the schema alone")
         return
-    init_db(Settings.from_env().database_url)
+    url = Settings.from_env().database_url
+    ensure_parent_directory(url)
+    engine(url)  # bind before anything queries
+    upgrade_to_head(url)
 
 
 async def seed_if_empty() -> None:
@@ -90,7 +97,8 @@ async def seed_if_empty() -> None:
     if not seeding_enabled():
         log.info("SEED_ON_START is off, skipping seed")
         return
-    init_db()
+    # Deliberately does not build the schema: migrations are the only path to
+    # one, and prepare_schema has already run by the time this does.
     if package_count() > 0:
         log.info("database already populated, skipping seed")
         return

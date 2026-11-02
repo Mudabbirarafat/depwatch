@@ -1,6 +1,7 @@
 """The ingestion loop: idempotency, quarantine, raw landing, run metadata."""
 
 import json
+import logging
 
 import httpx
 from sqlalchemy import select
@@ -142,3 +143,45 @@ async def test_run_metadata_is_recorded(db_url, tmp_path, registry_doc, mock_cli
         assert run.requested == 1
         assert run.succeeded == 1
         assert run.finished_at is not None
+
+
+async def test_the_quiet_failures_are_logged(
+    db_url, tmp_path, registry_doc, mock_client, caplog
+):
+    """Quarantine and fetch failure are both non-fatal by design, which is
+    exactly why they have to be visible: the run returns success-ish counts and
+    carries on, so the log is the only place the detail exists."""
+    caplog.set_level(logging.WARNING, logger="depwatch.ingest")
+    docs = {"express": registry_doc, "broken": {"dist-tags": {"latest": "1.0.0"}}}
+
+    await ingest_npm(
+        ["express", "broken", "does-not-exist"],
+        client=mock_client(responder(docs)),
+        db_url=db_url,
+        raw_dir=tmp_path / "raw",
+    )
+
+    events = {r.message: r for r in caplog.records}
+    assert "record quarantined" in events
+    assert events["record quarantined"].package == "broken"
+    assert events["record quarantined"].run_id is not None
+
+    assert "fetch failed" in events
+    assert events["fetch failed"].package == "does-not-exist"
+
+
+async def test_a_finished_run_logs_its_counts(
+    db_url, tmp_path, registry_doc, mock_client, caplog
+):
+    caplog.set_level(logging.INFO, logger="depwatch.ingest")
+    await ingest_npm(
+        ["express"],
+        client=mock_client(responder({"express": registry_doc})),
+        db_url=db_url,
+        raw_dir=tmp_path / "raw",
+    )
+
+    finished = [r for r in caplog.records if r.message == "ingest run finished"]
+    assert len(finished) == 1
+    assert finished[0].succeeded == 1
+    assert finished[0].source == "npm"

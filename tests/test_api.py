@@ -238,3 +238,79 @@ def test_the_dashboard_is_served_at_the_root(seeded):
     # The page drives itself from these three endpoints.
     for endpoint in ("/healthz", "/analyse", "/packages"):
         assert endpoint in page.text
+
+
+def test_packages_orders_before_limiting(seeded):
+    """The bug this replaced returned an arbitrary slice and called it the worst.
+
+    `aaa-safe` sorts first by name and scores nothing; `abandoned-thing` is the
+    risky one. Asking for a single row has to return the risky one, which only
+    happens if the sort runs before the limit.
+    """
+    with session_scope() as session:
+        session.add(
+            Package(
+                ecosystem="npm", name="aaa-safe", latest_version="2.0.0",
+                license="MIT", maintainers=6, deprecated=False,
+                last_published_at=datetime.now(UTC) - timedelta(days=3),
+            )
+        )
+
+    body = seeded.get("/packages?limit=1").json()
+    assert body["total"] == 3
+    assert body["count"] == 1
+    assert body["packages"][0]["name"] == "abandoned-thing"
+
+
+def test_packages_only_counts_advisories_from_its_own_ecosystem(seeded):
+    """Scoping the advisory query was the other half of the same bug."""
+    with session_scope() as session:
+        session.add(
+            Package(
+                ecosystem="pypi", name="express", latest_version="1.0.0",
+                license="MIT", maintainers=3, deprecated=False,
+                last_published_at=datetime.now(UTC) - timedelta(days=5),
+            )
+        )
+
+    body = seeded.get("/packages?ecosystem=pypi").json()
+    assert [p["name"] for p in body["packages"]] == ["express"]
+    # The npm express carries an advisory under the same package name; it must
+    # not be attributed to the PyPI package.
+    assert body["packages"][0]["advisories"] == 0
+
+
+def test_packages_rejects_an_absurd_page_size(seeded):
+    assert seeded.get("/packages?limit=100000").status_code == 422
+    assert seeded.get("/packages?limit=0").status_code == 422
+
+
+def test_analyse_refuses_more_packages_than_it_will_score(seeded):
+    """An open endpoint with no ceiling turns one request into one huge query."""
+    body = seeded.post("/analyse", json={"names": [f"pkg-{i}" for i in range(201)]})
+    assert body.status_code == 422
+
+
+def test_analyse_counts_names_and_manifest_together(seeded):
+    """Either half can be under the limit while the request is over it."""
+    response = seeded.post(
+        "/analyse",
+        json={
+            "names": [f"a-{i}" for i in range(150)],
+            "manifest": {"dependencies": {f"b-{i}": "^1.0.0" for i in range(150)}},
+        },
+    )
+    assert response.status_code == 422
+    assert "the limit is 200" in response.text
+
+
+def test_analyse_refuses_a_name_longer_than_the_column(seeded):
+    response = seeded.post("/analyse", json={"names": ["x" * 256]})
+    assert response.status_code == 422
+
+
+def test_analyse_still_accepts_a_request_at_the_limit(seeded):
+    """The cap must not reject the realistic case it exists to bound."""
+    response = seeded.post("/analyse", json={"names": [f"pkg-{i}" for i in range(200)]})
+    assert response.status_code == 200
+    assert response.json()["summary"]["requested"] == 200

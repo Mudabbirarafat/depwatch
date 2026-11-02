@@ -8,6 +8,7 @@ the run continues; a single malformed package must not cost you the other 499.
 
 import asyncio
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,6 +19,8 @@ from depwatch.db import session_scope, upsert_advisories, upsert_packages
 from depwatch.http import RateLimitedClient
 from depwatch.models import IngestRun, Quarantine
 from depwatch.sources import npm, osv
+
+log = logging.getLogger("depwatch.ingest")
 
 
 def raw_path(root: Path, source: str, run_id: int, when: datetime | None = None) -> Path:
@@ -66,6 +69,11 @@ async def ingest_npm(
         session.flush()  # assigns run.id
         run_id = run.id
 
+    log.info(
+        "ingest run started",
+        extra={"run_id": run_id, "source": npm.ECOSYSTEM, "requested": len(names)},
+    )
+
     try:
         fetched = await fetch_all(client, settings.npm_registry, names)
     finally:
@@ -77,12 +85,24 @@ async def ingest_npm(
 
     write_raw(raw_path(root, npm.ECOSYSTEM, run_id), list(documents.values()))
 
+    for name, error in failures.items():
+        log.warning(
+            "fetch failed",
+            extra={"run_id": run_id, "source": npm.ECOSYSTEM, "package": name,
+                   "error": str(error)[:200]},
+        )
+
     rows, bad = [], []
     for name, document in documents.items():
         try:
             rows.append(npm.parse(document).to_row())
         except ValidationError as exc:
             bad.append((name, str(exc), document))
+            log.warning(
+                "record quarantined",
+                extra={"run_id": run_id, "source": npm.ECOSYSTEM, "package": name,
+                       "reason": str(exc)[:200]},
+            )
 
     with session_scope(db_url) as session:
         written = upsert_packages(session, rows)
@@ -105,13 +125,15 @@ async def ingest_npm(
         if failures:
             run.error = "; ".join(f"{n}: {e}" for n, e in list(failures.items())[:5])
 
-    return {
+    summary = {
         "run_id": run_id,
         "requested": len(names),
         "succeeded": len(rows),
         "quarantined": len(bad),
         "failed": len(failures),
     }
+    log.info("ingest run finished", extra={"source": npm.ECOSYSTEM, **summary})
+    return summary
 
 
 async def ingest_advisories(
@@ -138,6 +160,11 @@ async def ingest_advisories(
         session.flush()
         run_id = run.id
 
+    log.info(
+        "ingest run started",
+        extra={"run_id": run_id, "source": "osv", "requested": len(names)},
+    )
+
     responses: dict[str, object] = {}
     try:
         for name in names:
@@ -156,6 +183,13 @@ async def ingest_advisories(
 
     write_raw(raw_path(root, "osv", run_id), [{"package": n, "response": b} for n, b in bodies.items()])
 
+    for name, error in failures.items():
+        log.warning(
+            "advisory query failed",
+            extra={"run_id": run_id, "source": "osv", "package": name,
+                   "error": str(error)[:200]},
+        )
+
     rows: list[dict] = []
     for name, body in bodies.items():
         rows.extend(osv.parse_response(body, package_name=name, ecosystem=ecosystem))
@@ -170,10 +204,12 @@ async def ingest_advisories(
         if failures:
             run.error = "; ".join(f"{n}: {e}" for n, e in list(failures.items())[:5])
 
-    return {
+    summary = {
         "run_id": run_id,
         "requested": len(names),
         "advisories": written,
         "packages_clean": sum(1 for n in bodies if not any(r["package_name"] == n for r in rows)),
         "failed": len(failures),
     }
+    log.info("ingest run finished", extra={"source": "osv", **summary})
+    return summary

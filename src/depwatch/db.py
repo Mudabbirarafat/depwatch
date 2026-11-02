@@ -33,7 +33,7 @@ def engine(url: str | None = None):
     return _engine
 
 
-def _ensure_parent_directory(url: str) -> None:
+def ensure_parent_directory(url: str) -> None:
     """Create the directory a SQLite file lives in.
 
     SQLite does not create a missing directory - it just fails to open the
@@ -50,7 +50,7 @@ def _ensure_parent_directory(url: str) -> None:
 
 
 def init_db(url: str | None = None) -> None:
-    _ensure_parent_directory(url or settings.database_url)
+    ensure_parent_directory(url or settings.database_url)
     Base.metadata.create_all(engine(url))
 
 

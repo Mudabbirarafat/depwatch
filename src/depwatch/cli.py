@@ -1,6 +1,6 @@
 """Command line entry point.
 
-    depwatch init-db
+    depwatch migrate
     depwatch ingest express react lodash
     depwatch ingest --from-manifest package.json
     depwatch runs
@@ -12,8 +12,10 @@ import json
 import sys
 from pathlib import Path
 
-from depwatch.db import init_db, session_scope
+from depwatch import logs
+from depwatch.db import session_scope
 from depwatch.ingest import ingest_advisories, ingest_npm
+from depwatch.migrate import upgrade_to_head
 from depwatch.models import IngestRun
 from depwatch.seed import SEED_PACKAGES, seed
 
@@ -56,7 +58,9 @@ def cmd_advisories(args: argparse.Namespace) -> int:
 
 
 def cmd_seed(args: argparse.Namespace) -> int:
-    init_db()
+    # Seeding does not create the schema itself - migrations are the only way
+    # it gets built - so bring it up first for anyone running this standalone.
+    upgrade_to_head()
     print(json.dumps(asyncio.run(seed(args.names or None)), indent=2, default=str))
     return 0
 
@@ -86,9 +90,9 @@ def cmd_runs(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_init_db(args: argparse.Namespace) -> int:
-    init_db()
-    print("schema created")
+def cmd_migrate(args: argparse.Namespace) -> int:
+    upgrade_to_head()
+    print("schema at head")
     return 0
 
 
@@ -96,8 +100,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="depwatch")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_init = sub.add_parser("init-db", help="create the schema")
-    p_init.set_defaults(func=cmd_init_db)
+    p_init = sub.add_parser(
+        "migrate", aliases=["init-db"], help="create or upgrade the schema to head"
+    )
+    p_init.set_defaults(func=cmd_migrate)
 
     p_ingest = sub.add_parser("ingest", help="ingest npm packages")
     p_ingest.add_argument("names", nargs="*", help="package names")
@@ -123,11 +129,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_runs.add_argument("--limit", type=int, default=10)
     p_runs.set_defaults(func=cmd_runs)
 
+    parser.add_argument(
+        "--log-level", default=None, help="DEBUG, INFO, WARNING ... (env: LOG_LEVEL)"
+    )
+    parser.add_argument(
+        "--log-format", default=None, choices=["text", "json"], help="(env: LOG_FORMAT)"
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # Configured here rather than at import, so importing the package does not
+    # reach into another program's logging setup.
+    logs.configure(level=args.log_level, fmt=args.log_format)
     return args.func(args)
 
 
