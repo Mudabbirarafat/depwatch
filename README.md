@@ -8,6 +8,10 @@ maintainer who last shipped years ago — with the reasoning for every score.
 
 [![CI](https://github.com/Mudabbirarafat/depwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/Mudabbirarafat/depwatch/actions/workflows/ci.yml)
 
+**Live: https://depwatch-2oj2.onrender.com** — paste a `package.json`, or load the
+risky example. It runs on a free instance that sleeps when idle, so the first
+request after a quiet spell takes about fifty seconds to wake it.
+
 > **Status:** week three. npm metadata and OSV advisories ingest end to end,
 > manifest ranges resolve to the version you would actually install, the API
 > answers from the warehouse, and there is a dashboard in front of it. PyPI,
@@ -157,6 +161,8 @@ Stated here rather than discovered by you:
   responsiveness are the strongest maintenance indicators and are not in here.
 
 ## Deployment
+
+Running at **https://depwatch-2oj2.onrender.com**.
 
 `render.yaml` is the deployment: a free Render web service, `pip install .`,
 `uvicorn depwatch.api:app`, health-checked on `/healthz`. Standing up a copy
