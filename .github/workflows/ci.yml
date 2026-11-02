@@ -41,7 +41,7 @@ jobs:
         env:
           DATABASE_URL: sqlite:///smoke.db
         run: |
-          python -m depwatch.cli init-db
+          python -m depwatch.cli migrate
           python -m depwatch.cli ingest express react lodash
           python -m depwatch.cli advisories express react lodash
           python -m depwatch.cli runs
@@ -71,4 +71,126 @@ jobs:
           assert pinned["score"] > latest["score"], (pinned, latest)
           print(json.dumps(body["summary"]))
           print("pinned lodash:", pinned["score"], "vs latest:", latest["score"])
+          EOF
+
+  # Everything above runs on SQLite, including the whole unit suite, so the
+  # Postgres branches are otherwise never executed. The upsert in particular
+  # picks its insert construct by dialect: `upsert_packages` uses pg_insert
+  # here and sqlite_insert everywhere else, and that is the piece reruns and
+  # backfills depend on being correct.
+  postgres:
+    runs-on: ubuntu-latest
+    needs: test
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: depwatch
+          POSTGRES_PASSWORD: depwatch
+          POSTGRES_DB: depwatch
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+psycopg://depwatch:depwatch@localhost:5432/depwatch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e ".[dev,postgres]"
+
+      - name: Migrations apply to Postgres
+        run: python -m depwatch.cli migrate
+
+      - name: The migrations describe the models on Postgres too
+        run: |
+          python - <<'EOF'
+          from alembic.autogenerate import compare_metadata
+          from alembic.migration import MigrationContext
+          from sqlalchemy import create_engine
+          from depwatch.config import settings
+          from depwatch.models import Base
+
+          with create_engine(settings.database_url).connect() as connection:
+              difference = compare_metadata(MigrationContext.configure(connection), Base.metadata)
+          # SQLite cannot express everything Postgres can, so drift that the
+          # local suite cannot see shows up here.
+          assert difference == [], difference
+          print("no drift on postgres")
+          EOF
+
+      - name: Ingest, rerun, and prove the Postgres upsert is idempotent
+        run: |
+          python -m depwatch.cli ingest express lodash minimist
+          python -m depwatch.cli advisories express lodash minimist
+          python - <<'EOF'
+          from sqlalchemy import func, select
+          from depwatch.db import session_scope
+          from depwatch.models import Advisory, Package
+
+          with session_scope() as session:
+              before = (
+                  session.scalar(select(func.count()).select_from(Package)),
+                  session.scalar(select(func.count()).select_from(Advisory)),
+              )
+          print("after first run:", before)
+          assert before[0] == 3, before
+          assert before[1] > 0, before
+          EOF
+
+          # The same three packages again. ON CONFLICT DO UPDATE has to refresh
+          # rather than insert, or a rerun after a crash doubles the warehouse.
+          python -m depwatch.cli ingest express lodash minimist
+          python -m depwatch.cli advisories express lodash minimist
+          python - <<'EOF'
+          from sqlalchemy import func, select
+          from depwatch.db import session_scope
+          from depwatch.models import Advisory, Package
+
+          with session_scope() as session:
+              packages = session.scalar(select(func.count()).select_from(Package))
+              advisories = session.scalar(select(func.count()).select_from(Advisory))
+              first_seen, fetched = session.execute(
+                  select(Package.first_seen_at, Package.fetched_at).where(Package.name == "express")
+              ).one()
+
+          assert packages == 3, f"rerun duplicated packages: {packages}"
+          print("after rerun:", packages, advisories)
+          # first_seen_at records when we first learned of the package and must
+          # survive every later refresh; fetched_at must move.
+          assert fetched >= first_seen, (fetched, first_seen)
+          print("first_seen preserved:", first_seen, "fetched:", fetched)
+          EOF
+
+      - name: The gates read Postgres timestamps correctly
+        run: |
+          python - <<'EOF'
+          # Postgres returns timezone-aware datetimes where SQLite returns
+          # naive ones. The freshness gate compares against an aware now(), so
+          # this is the half of that comparison the local suite cannot reach.
+          from depwatch.gates import evaluate
+
+          report = evaluate()
+          for gate in report["gates"]:
+              print(f"{'PASS' if gate['passed'] else 'FAIL'}  {gate['name']:26} {gate['detail']}")
+          assert report["passed"], report
+          EOF
+
+      - name: The API answers from Postgres
+        run: |
+          python - <<'EOF'
+          from fastapi.testclient import TestClient
+          from depwatch.api import app
+
+          client = TestClient(app)
+          assert client.get("/healthz").json()["packages"] == 3
+          body = client.post("/analyse", json={"names": ["express", "lodash", "minimist"]}).json()
+          assert body["summary"]["analysed"] == 3, body
+          assert client.get("/gates").status_code == 200
+          print("postgres end to end:", body["summary"])
           EOF

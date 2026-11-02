@@ -1,0 +1,47 @@
+name: Scheduled refresh
+
+# The pipeline's scheduler.
+#
+# Render's free plan has no cron jobs, so the schedule lives here and the work
+# happens over HTTP against the deployed instance. That is not purely a
+# workaround: it keeps the schedule in the repository, where it is reviewable
+# in a diff, rather than in a console somebody has to remember to look at.
+#
+# The alerting is this job failing. GitHub emails the owner when a scheduled
+# workflow fails, and every gate breach exits non-zero - so stale data, a
+# collapsed success rate or a spike in quarantined records all arrive as mail
+# rather than waiting to be noticed.
+#
+# Needs two repository secrets:
+#   DEPWATCH_URL            https://depwatch-2oj2.onrender.com
+#   DEPWATCH_REFRESH_TOKEN  the REFRESH_TOKEN value from the Render dashboard
+
+on:
+  schedule:
+    # Daily, deliberately off the hour: the top of the hour is when everyone
+    # else's cron runs and registries are busiest.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+# Two refreshes at once would be declined by the instance anyway; this keeps a
+# manual run from racing the scheduled one in the first place.
+concurrency:
+  group: depwatch-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # No install step: the script is standard library only.
+      - name: Refresh, then gate
+        env:
+          DEPWATCH_URL: ${{ secrets.DEPWATCH_URL }}
+          DEPWATCH_REFRESH_TOKEN: ${{ secrets.DEPWATCH_REFRESH_TOKEN }}
+        run: python .github/scripts/refresh_and_gate.py

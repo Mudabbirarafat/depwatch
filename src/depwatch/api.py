@@ -21,12 +21,14 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Query, Request
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 
-from depwatch import logs, ranges, ratelimit
+from depwatch import gates, logs, ranges, ratelimit
+from depwatch import refresh as refresh_module
+from depwatch.auth import require_token
 from depwatch.db import session_scope
 from depwatch.models import Advisory, IngestRun, Package
 from depwatch.risk import score_package
@@ -220,6 +222,55 @@ def healthz() -> dict:
                 else None
             ),
         }
+
+
+@app.get("/gates")
+def check_gates() -> JSONResponse:
+    """Whether the data is fresh and clean enough to be trusted.
+
+    A failing gate answers 503 rather than 200-with-a-flag, so a caller that
+    only checks the status code cannot mistake bad data for good. The full
+    report is in the body either way - a monitor needs to know which gate
+    failed, not just that one did.
+
+    Deliberately separate from /healthz: the platform uses that one to decide
+    whether to keep the instance alive, and stale data is not a reason to
+    restart a working server.
+    """
+    report = gates.evaluate()
+    return JSONResponse(report, status_code=200 if report["passed"] else 503)
+
+
+@app.post("/refresh", dependencies=[Depends(require_token)])
+async def start_refresh(request: Request) -> JSONResponse:
+    """Re-ingest everything the warehouse knows. Returns immediately.
+
+    Ingestion takes a minute or so against two external APIs, which is far
+    longer than a caller should hold a connection open for, so this starts the
+    work and answers 202. The scheduled workflow polls /gates afterwards to
+    find out whether it worked.
+
+    A second request while one is running is declined rather than queued:
+    overlapping crawls of the same packages would double the rate-limit
+    pressure to produce the same rows twice.
+    """
+    task = refresh_module.start()
+    if task is None:
+        return JSONResponse(
+            {"status": "already_running", "detail": "A refresh is in flight."},
+            status_code=409,
+        )
+    return JSONResponse({"status": "started"}, status_code=202)
+
+
+@app.get("/refresh/status", dependencies=[Depends(require_token)])
+def refresh_status() -> dict:
+    """What the last refresh did, for a caller that wants more than a gate."""
+    return {
+        "running": refresh_module.state.running,
+        "last_summary": refresh_module.state.last_summary,
+        "last_error": refresh_module.state.last_error,
+    }
 
 
 @app.post("/analyse", response_model=AnalyseResponse)

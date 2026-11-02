@@ -12,11 +12,12 @@ maintainer who last shipped years ago — with the reasoning for every score.
 risky example. It runs on a free instance that sleeps when idle, so the first
 request after a quiet spell takes about fifty seconds to wake it.
 
-> **Status:** week four. npm metadata and OSV advisories ingest end to end,
+> **Status:** week five. npm metadata and OSV advisories ingest end to end,
 > manifest ranges resolve to the version you would actually install, the API
 > answers from the warehouse, there is a dashboard in front of it, and it is
-> deployed with migrations, bounded endpoints and a logged ingestion path.
-> PyPI, GitHub activity signals and dbt marts are next.
+> deployed with migrations, bounded endpoints and a logged ingestion path,
+> and it refreshes on a schedule behind freshness and quality gates. PyPI,
+> GitHub activity signals and dbt marts are next.
 
 ## Pipeline
 
@@ -44,6 +45,13 @@ request after a quiet spell takes about fifty seconds to wake it.
                           │
                           ▼
                      dashboard  ·  paste a package.json, get the report
+
+
+   scheduled workflow  ──  POST /refresh  ──▶  the loop above runs again
+            │                                            │
+            └──────────  GET /gates  ◀───────────────────┘
+                            │
+                            ▼  a breach fails the workflow, which is the alert
 ```
 
 ## Quickstart
@@ -203,6 +211,13 @@ Stated here rather than discovered by you:
   semver grammar. Anything it cannot parse is treated as still vulnerable.
 - **No GitHub signals yet** — last commit, contributor count and issue
   responsiveness are the strongest maintenance indicators and are not in here.
+- **The rate limit is per instance.** It lives in the process, so two instances
+  mean two independent allowances and a restart forgets every count. A shared
+  limiter needs Redis, which is not worth a dependency at this size.
+- **Deployed on SQLite, not Postgres.** Render's free Postgres expires after a
+  month and leaves a dead link behind, which is the failure this project was
+  partly built to avoid. CI proves the Postgres path on every push; switching
+  is a `databases:` block and `pip install ".[postgres]"`.
 
 ## Deployment
 
@@ -232,10 +247,64 @@ warehouse is derived data and rebuilds in about a minute. Switching to
 Postgres is a `databases:` block and `pip install ".[postgres]"`; no
 application code changes.
 
+## Scheduling and gates
+
+Ingestion used to be a thing you ran. It is now a thing that happens.
+
+A scheduled GitHub Actions workflow calls `POST /refresh` on the deployed
+instance once a day, waits for it, then checks `GET /gates`. Render's free plan
+has no cron, so the schedule lives in the workflow — which is not purely a
+workaround: a schedule in the repository is reviewable in a diff, and a
+schedule in a console is a setting somebody has to remember to look at.
+
+**The gates read the run metadata that nothing was reading.** Every run already
+recorded what it saw; without something checking those numbers they were
+decoration, because a pipeline that quietly stops ingesting looks exactly like
+a healthy one from outside. Five gates: the warehouse has data, advisories were
+actually fetched, the newest finished run is recent enough, and the last run's
+failure and quarantine rates are under their thresholds.
+
+They are deliberately about the data, not the process. "The server is up" is
+`/healthz`. "The server is up and serving three-week-old numbers from one
+successful run in nine attempts" is what these catch — and `/healthz` stays
+green through a gate breach on purpose, because the platform restarts an
+instance whose health check fails and stale data is not a reason to restart a
+working server.
+
+**A failing gate is the alerting.** `/gates` answers 503 rather than
+200-with-a-flag, so a caller checking only the status code cannot mistake bad
+data for good; the full report is in the body either way, because a monitor
+needs to know which gate failed. The workflow exits non-zero on a breach, and
+GitHub emails about failed scheduled workflows.
+
+**`/refresh` is the one endpoint that needs a secret.** It starts a crawl
+against two external APIs and rewrites the warehouse, so an open one is a way
+to spend someone else's rate limit. One shared token, compared with
+`compare_digest`, and it **fails closed** — an unset `REFRESH_TOKEN` makes the
+endpoint unavailable rather than unprotected, because the convenient reading is
+how a half-finished deploy becomes an open write endpoint. A second refresh
+while one is running is declined rather than queued: overlapping crawls of the
+same packages double the rate-limit pressure to write the same rows twice.
+
+```bash
+depwatch refresh          # re-ingest everything already known
+depwatch gates            # prints each gate; exits 1 on a breach
+```
+
+### Running the schedule against your own instance
+
+Two repository secrets, and the token is generated by Render rather than
+written anywhere:
+
+| secret | value |
+| --- | --- |
+| `DEPWATCH_URL` | your instance's URL |
+| `DEPWATCH_REFRESH_TOKEN` | the `REFRESH_TOKEN` Render generated, from its dashboard |
+
 ## Tests
 
 ```bash
-pytest       # 160 cases
+pytest       # 189 cases
 ruff check .
 ```
 
@@ -253,6 +322,16 @@ the non-fatal failures actually reach the log.
 CI additionally runs a live ingest against the real npm registry and OSV, so a
 schema change at either fails the build instead of silently corrupting a mart.
 
+A third job runs against Postgres. Everything else is SQLite, including the
+whole unit suite, so the Postgres branches would otherwise never execute — and
+the upsert picks its insert construct by dialect, which is exactly the piece
+reruns and backfills depend on. That job migrates, checks for model drift
+against a real Postgres schema, ingests, ingests the same packages *again* and
+asserts the row counts did not move, and checks the gates read
+timezone-aware timestamps correctly. SQLite returns naive datetimes from a
+`timezone=True` column and Postgres returns aware ones, so half of that
+comparison is unreachable locally.
+
 ## Layout
 
 ```
@@ -268,9 +347,12 @@ src/depwatch/
   api.py           /analyse, /packages, /healthz, the dashboard
   seed.py          filling a fresh instance, without blocking its boot
   migrate.py       upgrade head, from the CLI or from the booting server
+  refresh.py       re-ingesting what is already known, one run at a time
+  gates.py         freshness and quality, as pass or fail
+  auth.py          one shared secret, failing closed
   ratelimit.py     a sliding window per client; /healthz exempt
   logs.py          text by default, JSON for a platform to search
-  cli.py           migrate, ingest, advisories, seed, runs, serve
+  cli.py           migrate, ingest, advisories, seed, refresh, gates, runs, serve
   migrations/      alembic, shipped inside the package
   web/index.html   the dashboard, dependency-free
   sources/npm.py   registry projection and its awkward shapes
@@ -279,9 +361,7 @@ src/depwatch/
 
 ## Next
 
-1. Scheduled ingestion, so the warehouse refreshes on a timer rather than
-   whenever the instance happens to restart
-2. A materialised score, so `/packages` stops being O(packages) per request
-3. PyPI source behind the same interface
-4. GitHub activity: last commit, contributors, issue responsiveness
-5. dbt marts with freshness and quality gates, failing the run on a breach
+1. A materialised score, so `/packages` stops being O(packages) per request
+2. PyPI source behind the same interface
+3. GitHub activity: last commit, contributors, issue responsiveness
+4. dbt marts, moving the gates from Python into the transformation layer

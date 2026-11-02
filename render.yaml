@@ -48,3 +48,15 @@ services:
         value: "1"
       - key: INIT_DB_ON_START
         value: "1"
+
+      # The shared secret for POST /refresh. Render generates the value and it
+      # never appears in this repository. Copy it from the dashboard into the
+      # DEPWATCH_REFRESH_TOKEN repository secret so the scheduled workflow can
+      # authenticate. Until it is set, /refresh answers 503 - the endpoint is
+      # disabled rather than unprotected.
+      - key: REFRESH_TOKEN
+        generateValue: true
+
+      # The freshness gate allows a daily schedule one missed run.
+      - key: MAX_DATA_AGE_HOURS
+        value: "50"

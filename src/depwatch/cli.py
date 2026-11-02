@@ -12,11 +12,12 @@ import json
 import sys
 from pathlib import Path
 
-from depwatch import logs
+from depwatch import gates, logs
 from depwatch.db import session_scope
 from depwatch.ingest import ingest_advisories, ingest_npm
 from depwatch.migrate import upgrade_to_head
 from depwatch.models import IngestRun
+from depwatch.refresh import refresh
 from depwatch.seed import SEED_PACKAGES, seed
 
 
@@ -63,6 +64,21 @@ def cmd_seed(args: argparse.Namespace) -> int:
     upgrade_to_head()
     print(json.dumps(asyncio.run(seed(args.names or None)), indent=2, default=str))
     return 0
+
+
+def cmd_refresh(args: argparse.Namespace) -> int:
+    print(json.dumps(asyncio.run(refresh(args.names or None)), indent=2, default=str))
+    return 0
+
+
+def cmd_gates(args: argparse.Namespace) -> int:
+    """Non-zero exit on a failing gate, so a scheduler can act on it."""
+    report = gates.evaluate()
+    for gate in report["gates"]:
+        print(f"{'PASS' if gate['passed'] else 'FAIL'}  {gate['name']:26} {gate['detail']}")
+    print()
+    print("all gates passed" if report["passed"] else "GATES FAILED")
+    return 0 if report["passed"] else 1
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -118,6 +134,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_seed = sub.add_parser("seed", help=f"ingest a starter set ({len(SEED_PACKAGES)} packages)")
     p_seed.add_argument("names", nargs="*")
     p_seed.set_defaults(func=cmd_seed)
+
+    p_refresh = sub.add_parser("refresh", help="re-ingest everything already known")
+    p_refresh.add_argument("names", nargs="*", help="override which packages to refresh")
+    p_refresh.set_defaults(func=cmd_refresh)
+
+    p_gates = sub.add_parser("gates", help="check freshness and quality; exits 1 on a breach")
+    p_gates.set_defaults(func=cmd_gates)
 
     p_serve = sub.add_parser("serve", help="run the API")
     p_serve.add_argument("--host", default="127.0.0.1")
