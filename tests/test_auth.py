@@ -85,12 +85,22 @@ def test_the_status_endpoint_is_protected_too(client, monkeypatch):
 
 
 def test_reading_stays_public(client, monkeypatch):
-    """The dashboard is the point; it must not need a secret."""
+    """The dashboard is the point; it must not need a secret.
+
+    What this asserts is that nothing is *rejected* for want of a token, which
+    is not the same as asserting 200. `/` answers 503 when the frontend has not
+    been built, and the Python suite runs without a Node build - so demanding
+    200 here tested the build step rather than the authentication.
+    """
     monkeypatch.setenv("REFRESH_TOKEN", TOKEN)
-    assert client.get("/").status_code == 200
+
+    for path in ("/", "/healthz", "/packages"):
+        assert client.get(path).status_code != 401, path
+    assert client.post("/analyse", json={"names": ["express"]}).status_code == 200
+
+    # The endpoints with nothing to build still answer properly.
     assert client.get("/healthz").status_code == 200
     assert client.get("/packages").status_code == 200
-    assert client.post("/analyse", json={"names": ["express"]}).status_code == 200
 
 
 def test_start_declines_while_one_is_running():
