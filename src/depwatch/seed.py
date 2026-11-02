@@ -21,7 +21,7 @@ from depwatch.config import Settings
 from depwatch.db import engine, session_scope
 from depwatch.ingest import ingest_advisories, ingest_npm
 from depwatch.migrate import upgrade_to_head
-from depwatch.models import Package
+from depwatch.models import Advisory, Package
 
 log = logging.getLogger("depwatch.seed")
 
@@ -45,6 +45,11 @@ SEED_PACKAGES = [
 def package_count() -> int:
     with session_scope() as session:
         return session.scalar(select(func.count()).select_from(Package)) or 0
+
+
+def advisory_count() -> int:
+    with session_scope() as session:
+        return session.scalar(select(func.count()).select_from(Advisory)) or 0
 
 
 async def seed(names: list[str] | None = None) -> dict:
@@ -98,9 +103,24 @@ async def seed_if_empty() -> None:
         return
     # Deliberately does not build the schema: migrations are the only path to
     # one, and prepare_schema has already run by the time this does.
-    if package_count() > 0:
-        log.info("database already populated, skipping seed")
+    #
+    # "Populated" has to mean both halves ran. Seeding fetches npm first and
+    # OSV second, so an instance replaced between the two comes back with
+    # packages and no advisories - and a check on packages alone then declares
+    # that finished and never repairs it. Found in production by the gate that
+    # asks whether any advisories were fetched at all.
+    packages, advisories = package_count(), advisory_count()
+    if packages > 0 and advisories > 0:
+        log.info(
+            "database already populated, skipping seed",
+            extra={"packages": packages, "advisories": advisories},
+        )
         return
+    if packages > 0:
+        log.warning(
+            "packages present but no advisories; seeding again to finish the job",
+            extra={"packages": packages},
+        )
     try:
         await seed()
     except Exception:

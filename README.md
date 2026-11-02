@@ -304,7 +304,7 @@ written anywhere:
 ## Tests
 
 ```bash
-pytest       # 189 cases
+pytest       # 191 cases
 ruff check .
 ```
 
