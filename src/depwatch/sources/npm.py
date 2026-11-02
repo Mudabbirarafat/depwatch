@@ -29,6 +29,7 @@ class NpmPackage(BaseModel):
     maintainers: int | None = None
     deprecated: bool = False
     last_published_at: datetime | None = None
+    known_versions: list[str] = []
 
     model_config = {"extra": "ignore"}
 
@@ -51,6 +52,7 @@ class NpmPackage(BaseModel):
             "maintainers": self.maintainers,
             "deprecated": self.deprecated,
             "last_published_at": self.last_published_at,
+            "known_versions": self.known_versions,
             "first_seen_at": now,
             "fetched_at": now,
         }
@@ -109,6 +111,7 @@ def parse(document: dict) -> NpmPackage:
         ),
         maintainers=maintainer_count,
         deprecated=bool(latest_doc.get("deprecated")),
+        known_versions=sorted(versions.keys()) if isinstance(versions, dict) else [],
         last_published_at=published,
     )
 

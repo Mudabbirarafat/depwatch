@@ -31,6 +31,7 @@ def seeded(client):
                 ecosystem="npm", name="express", latest_version="5.3.0",
                 license="MIT", maintainers=5, deprecated=False,
                 last_published_at=now - timedelta(days=20),
+                known_versions=["4.17.1", "4.18.0", "4.19.2", "4.20.0", "5.0.0", "5.3.0"],
             )
         )
         session.add(
@@ -47,6 +48,14 @@ def seeded(client):
                 summary="Remote code execution", fixed_version=None,
             )
         )
+        # Fixed long ago: harmless on 5.3.0, dangerous on a 4.17 pin.
+        session.add(
+            Advisory(
+                ecosystem="npm", package_name="express",
+                osv_id="GHSA-test-0002", severity="HIGH",
+                summary="Open redirect", fixed_version="4.19.2",
+            )
+        )
     return client
 
 
@@ -54,7 +63,7 @@ def test_healthz_reports_counts(seeded):
     body = seeded.get("/healthz").json()
     assert body["status"] == "ok"
     assert body["packages"] == 2
-    assert body["advisories"] == 1
+    assert body["advisories"] == 2
 
 
 def test_healthz_works_on_an_empty_database(client):
@@ -133,3 +142,54 @@ def test_manifest_reader_covers_the_three_sections():
 
 def test_manifest_reader_ignores_malformed_sections():
     assert names_from_manifest({"dependencies": "not-a-dict"}) == []
+
+
+def test_a_pinned_manifest_range_is_scored_at_that_version(seeded):
+    """The understated-risk case: express 5.3.0 is clean, but a project pinned
+    to ^4.17.1 resolves to 4.20.0 ... which is past the fix, so still clean."""
+    body = seeded.post(
+        "/analyse", json={"manifest": {"dependencies": {"express": "^4.17.1"}}}
+    ).json()
+    report = body["analysed"][0]
+    assert report["requested_range"] == "^4.17.1"
+    assert report["scored_version"] == "4.20.0"
+    assert report["resolution"] == "resolved"
+
+
+def test_an_old_pin_is_exposed_where_latest_is_not(seeded):
+    """Same package, same advisory, different answer - which is the point."""
+    at_latest = seeded.post("/analyse", json={"names": ["express"]}).json()["analysed"][0]
+    pinned = seeded.post(
+        "/analyse", json={"manifest": {"dependencies": {"express": "4.18.0"}}}
+    ).json()["analysed"][0]
+
+    assert at_latest["score"] == 0
+    assert pinned["scored_version"] == "4.18.0"
+    assert pinned["score"] > at_latest["score"]
+    assert "high severity advisory" in " ".join(pinned["reasons"])
+
+
+def test_unsupported_range_is_flagged_in_the_report(seeded):
+    body = seeded.post(
+        "/analyse", json={"manifest": {"dependencies": {"express": "^4 || ^5"}}}
+    ).json()
+    report = body["analysed"][0]
+    assert report["resolution"] == "unsupported-range"
+    assert "not supported" in " ".join(report["reasons"])
+    assert body["summary"]["unresolved_ranges"] == 1
+
+
+def test_range_matching_no_published_version_is_flagged(seeded):
+    body = seeded.post(
+        "/analyse", json={"manifest": {"dependencies": {"express": "^9.0.0"}}}
+    ).json()
+    report = body["analysed"][0]
+    assert report["resolution"] == "no-matching-version"
+    assert "no published version satisfies" in " ".join(report["reasons"])
+
+
+def test_bare_names_are_scored_against_latest(seeded):
+    report = seeded.post("/analyse", json={"names": ["express"]}).json()["analysed"][0]
+    assert report["requested_range"] is None
+    assert report["resolution"] == "latest"
+    assert report["scored_version"] == "5.3.0"

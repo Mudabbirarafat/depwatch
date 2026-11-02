@@ -52,6 +52,7 @@ def score_package(
     advisories: list[dict] | None = None,
     *,
     now: datetime | None = None,
+    effective_version: str | None = None,
 ) -> RiskResult:
     """Score one package. Higher is worse; the scale is clamped to 0-100.
 
@@ -67,7 +68,9 @@ def score_package(
     # this, a well-maintained package is penalised forever for vulnerabilities
     # it fixed years ago - express, for instance, has five advisories all
     # fixed by 4.20.0 while shipping 5.3.0.
-    current_version = package.get("latest_version")
+    # The version the consumer would actually install, when the caller has
+    # resolved their manifest range; otherwise the package's latest.
+    current_version = effective_version or package.get("latest_version")
     stale_advisories = [
         a for a in advisories
         if not advisory_applies(a.get("fixed_version"), current_version)

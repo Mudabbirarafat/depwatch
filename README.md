@@ -8,9 +8,10 @@ maintainer who last shipped years ago — with the reasoning for every score.
 
 [![CI](https://github.com/Mudabbirarafat/depwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/Mudabbirarafat/depwatch/actions/workflows/ci.yml)
 
-> **Status:** week two. npm metadata and OSV advisories ingest end to end,
-> risk scoring is version-aware, and the API answers from the warehouse.
-> PyPI, GitHub activity signals, dbt marts and the dashboard are next.
+> **Status:** week three. npm metadata and OSV advisories ingest end to end,
+> manifest ranges resolve to the version you would actually install, and the
+> API answers from the warehouse. PyPI, GitHub activity signals, dbt marts and
+> a deployed dashboard are next.
 
 ## Pipeline
 
@@ -60,7 +61,25 @@ Against Postgres instead: `docker compose up`.
 
 ## What it actually returns
 
-Real output, from real registry and OSV data:
+The same three dependencies, pinned two different ways. Real registry and OSV
+data; the only thing that changed is the manifest:
+
+```
+# "express": "^5.0.0", "lodash": "^4.17.21", "minimist": "^1.2.8"
+  express    scored=5.3.0     score=0    low    5 past advisories, all fixed in the current version
+  lodash     scored=4.18.1    score=15   low    single maintainer
+  minimist   scored=1.2.8     score=25   low    no release in 3 years
+
+# "express": "4.17.1", "lodash": "4.17.11", "minimist": "1.2.0"
+  lodash     scored=4.17.11   score=85   HIGH   critical severity advisory GHSA-jf85-cpcp-j695
+  minimist   scored=1.2.0     score=75   HIGH   critical severity advisory GHSA-xvch-5gv4-984h
+  express    scored=4.17.1    score=25   low    moderate severity advisory GHSA-rv95-896h-c2vc
+```
+
+That difference is the whole point: a report about the latest release says
+nothing useful to someone running an old pin.
+
+Per-package detail:
 
 ```
 summary: {"requested": 4, "analysed": 4, "unknown": 0, "high": 0, "medium": 0, "low": 4}
@@ -99,9 +118,15 @@ box, and freshness checks need something to read.
 **Scoring is version-aware.** This one was a bug first. Counting every advisory
 ever published for a package rated `express` as medium risk — when all five of
 its advisories were fixed by 4.20.0 and it ships 5.3.0. An advisory now counts
-only if it has no published fix, or if the fix landed after the current
-version. When a version cannot be parsed the advisory still counts: failing
+only if it has no published fix, or if the fix landed after the version in
+play. When a version cannot be parsed the advisory still counts: failing
 towards "safe" on a security signal is the wrong way to be wrong.
+
+**Manifest ranges resolve to a concrete version.** `^4.17.1` is resolved
+against the versions the package has actually published, and the report says
+which version it scored and how it got there (`resolved`, `latest`,
+`unsupported-range`, `no-matching-version`). Prereleases are excluded, because
+npm will not install `5.4.0-beta.1` for `^5.0.0` unless you ask for it by name.
 
 **Scoring is a pure function.** No database, no network, no clock except the
 one passed in. Every weight in `risk.py` is stated and directly tested, so you
@@ -115,10 +140,11 @@ scheduled job; `"I have not ingested this yet"` is more honest than a timeout.
 
 Stated here rather than discovered by you:
 
-- **Advisories are matched against the package's latest version, not yours.**
-  A manifest range like `^4.17.0` is not resolved, so a report can understate
-  risk for a project pinned to an older version. Resolving ranges is the next
-  correctness step.
+- **The supported range grammar is a subset.** `^1.2.3`, `~1.2.3`, exact pins,
+  `>=`/`>`/`<=`/`<`, `1.x` and `*` resolve. Unions (`^4 || ^5`), hyphen ranges,
+  comparator sets and `workspace:`/`file:` specifiers do not: they are reported
+  as `unsupported-range` and scored against the latest version, with the
+  fallback stated in the report rather than hidden.
 - **Severity comes from `database_specific.severity`**, which OSV only sets on
   GitHub-reviewed advisories. Ungraded advisories still count towards the
   "no published fix" rule but contribute no severity points.
@@ -130,7 +156,7 @@ Stated here rather than discovered by you:
 ## Tests
 
 ```bash
-pytest       # 81 cases
+pytest       # 113 cases
 ruff check .
 ```
 
@@ -154,6 +180,7 @@ src/depwatch/
   ingest.py        fetch -> land raw -> validate -> upsert -> record
   risk.py          scoring: pure, weighted, explained
   versions.py      just enough semver to ask "is this still vulnerable?"
+  ranges.py        resolving a manifest range to an installed version
   api.py           /analyse, /packages, /healthz
   cli.py           init-db, ingest, advisories, runs, serve
   sources/npm.py   registry projection and its awkward shapes
@@ -162,9 +189,8 @@ src/depwatch/
 
 ## Next
 
-1. Resolve manifest version ranges so reports reflect your pinned versions
-2. PyPI source behind the same interface
-3. GitHub activity: last commit, contributors, issue responsiveness
-4. dbt marts with freshness and quality gates
-5. Dashboard, deployed
-6. Scheduled runs with alerting on a failed gate
+1. PyPI source behind the same interface
+2. GitHub activity: last commit, contributors, issue responsiveness
+3. dbt marts with freshness and quality gates
+4. Dashboard, deployed
+5. Scheduled runs with alerting on a failed gate

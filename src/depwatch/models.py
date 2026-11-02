@@ -47,6 +47,9 @@ class Package(Base):
     maintainers: Mapped[int | None] = mapped_column(Integer)
     deprecated: Mapped[bool] = mapped_column(Boolean, default=False)
     last_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Needed to resolve a manifest range to the version actually installed.
+    # A child table is the scalable shape; a JSON list is honest for now.
+    known_versions: Mapped[list | None] = mapped_column(JSON)
 
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

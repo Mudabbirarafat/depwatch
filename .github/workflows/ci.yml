@@ -58,5 +58,17 @@ jobs:
           body = c.post("/analyse", json={"names": ["express", "react", "lodash"]}).json()
           assert body["summary"]["analysed"] == 3, body
           assert not body["unknown"], body
+
+          # Range resolution must change the verdict, not just the report: an
+          # old lodash pin carries advisories that the current release fixed.
+          pinned = c.post(
+              "/analyse",
+              json={"manifest": {"dependencies": {"lodash": "4.17.11"}}},
+          ).json()["analysed"][0]
+          latest = [p for p in body["analysed"] if p["name"] == "lodash"][0]
+          assert pinned["resolution"] == "resolved", pinned
+          assert pinned["scored_version"] == "4.17.11", pinned
+          assert pinned["score"] > latest["score"], (pinned, latest)
           print(json.dumps(body["summary"]))
+          print("pinned lodash:", pinned["score"], "vs latest:", latest["score"])
           EOF
