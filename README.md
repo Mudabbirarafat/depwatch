@@ -9,9 +9,9 @@ maintainer who last shipped years ago — with the reasoning for every score.
 [![CI](https://github.com/Mudabbirarafat/depwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/Mudabbirarafat/depwatch/actions/workflows/ci.yml)
 
 > **Status:** week three. npm metadata and OSV advisories ingest end to end,
-> manifest ranges resolve to the version you would actually install, and the
-> API answers from the warehouse. PyPI, GitHub activity signals, dbt marts and
-> a deployed dashboard are next.
+> manifest ranges resolve to the version you would actually install, the API
+> answers from the warehouse, and there is a dashboard in front of it. PyPI,
+> GitHub activity signals and dbt marts are next.
 
 ## Pipeline
 
@@ -36,6 +36,9 @@ maintainer who last shipped years ago — with the reasoning for every score.
                    │
                    ▼  risk scoring (pure, version-aware)
              FastAPI  ──  POST /analyse · GET /packages · GET /healthz
+                          │
+                          ▼
+                     dashboard  ·  paste a package.json, get the report
 ```
 
 ## Quickstart
@@ -153,10 +156,36 @@ Stated here rather than discovered by you:
 - **No GitHub signals yet** — last commit, contributor count and issue
   responsiveness are the strongest maintenance indicators and are not in here.
 
+## Deployment
+
+`render.yaml` is the deployment: a free Render web service, `pip install .`,
+`uvicorn depwatch.api:app`, health-checked on `/healthz`. Standing up a copy
+is "New > Blueprint" against a fork — there is no console state to reproduce.
+
+Two things in there exist because of how a free instance actually behaves:
+
+**It seeds itself on boot.** The filesystem is ephemeral and the instance
+spins down when idle, so a cold start would otherwise serve an empty table.
+Ten packages ingest in the background on startup, and the page says it is
+still loading until they land. Seeding is *not* allowed to block startup:
+waiting on npm and OSV before opening the port means the platform's first
+health check times out and a working deploy is reported as a failed one.
+
+**The schema is created before the port opens.** The same race from the other
+side — `/healthz` counts rows, so the tables have to exist by the first health
+check. That one is a single local round trip, so it is fine to block on.
+Both cases are regression-tested in `tests/test_api.py`.
+
+SQLite on instance-local disk is a deliberate choice over Render's free
+Postgres, which expires after a month and leaves a dead link behind. The
+warehouse is derived data and rebuilds in about a minute. Switching to
+Postgres is a `databases:` block and `pip install ".[postgres]"`; no
+application code changes.
+
 ## Tests
 
 ```bash
-pytest       # 113 cases
+pytest       # 118 cases
 ruff check .
 ```
 
@@ -181,8 +210,10 @@ src/depwatch/
   risk.py          scoring: pure, weighted, explained
   versions.py      just enough semver to ask "is this still vulnerable?"
   ranges.py        resolving a manifest range to an installed version
-  api.py           /analyse, /packages, /healthz
-  cli.py           init-db, ingest, advisories, runs, serve
+  api.py           /analyse, /packages, /healthz, the dashboard
+  seed.py          filling a fresh instance, without blocking its boot
+  cli.py           init-db, ingest, advisories, seed, runs, serve
+  web/index.html   the dashboard, dependency-free
   sources/npm.py   registry projection and its awkward shapes
   sources/osv.py   advisory projection
 ```
@@ -192,5 +223,4 @@ src/depwatch/
 1. PyPI source behind the same interface
 2. GitHub activity: last commit, contributors, issue responsiveness
 3. dbt marts with freshness and quality gates
-4. Dashboard, deployed
-5. Scheduled runs with alerting on a failed gate
+4. Scheduled runs with alerting on a failed gate

@@ -10,10 +10,12 @@ first learned about a package and must survive every later refresh.
 
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from depwatch.config import settings
@@ -31,7 +33,24 @@ def engine(url: str | None = None):
     return _engine
 
 
+def _ensure_parent_directory(url: str) -> None:
+    """Create the directory a SQLite file lives in.
+
+    SQLite does not create a missing directory - it just fails to open the
+    file - and the deployment case is precisely the one that needs it, where
+    DATABASE_URL names a path like /tmp/depwatch/depwatch.db on an instance
+    that has never had a /tmp/depwatch.
+    """
+    parsed = make_url(url)
+    if parsed.get_backend_name() != "sqlite":
+        return
+    if not parsed.database or parsed.database == ":memory:":
+        return
+    Path(parsed.database).parent.mkdir(parents=True, exist_ok=True)
+
+
 def init_db(url: str | None = None) -> None:
+    _ensure_parent_directory(url or settings.database_url)
     Base.metadata.create_all(engine(url))
 
 

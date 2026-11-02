@@ -15,6 +15,7 @@ from pathlib import Path
 from depwatch.db import init_db, session_scope
 from depwatch.ingest import ingest_advisories, ingest_npm
 from depwatch.models import IngestRun
+from depwatch.seed import SEED_PACKAGES, seed
 
 
 def names_from_manifest(path: Path) -> list[str]:
@@ -51,6 +52,12 @@ def cmd_advisories(args: argparse.Namespace) -> int:
         print("nothing to query: pass package names or --from-manifest", file=sys.stderr)
         return 2
     print(json.dumps(asyncio.run(ingest_advisories(names)), indent=2))
+    return 0
+
+
+def cmd_seed(args: argparse.Namespace) -> int:
+    init_db()
+    print(json.dumps(asyncio.run(seed(args.names or None)), indent=2, default=str))
     return 0
 
 
@@ -101,6 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_adv.add_argument("names", nargs="*")
     p_adv.add_argument("--from-manifest", help="read names from a package.json")
     p_adv.set_defaults(func=cmd_advisories)
+
+    p_seed = sub.add_parser("seed", help=f"ingest a starter set ({len(SEED_PACKAGES)} packages)")
+    p_seed.add_argument("names", nargs="*")
+    p_seed.set_defaults(func=cmd_seed)
 
     p_serve = sub.add_parser("serve", help="run the API")
     p_serve.add_argument("--host", default="127.0.0.1")

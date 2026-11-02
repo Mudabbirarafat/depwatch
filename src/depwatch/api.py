@@ -16,9 +16,13 @@ rate-limited and unpredictable; ingestion is a scheduled job, and saying "I
 have not ingested this yet" is more honest than timing out.
 """
 
+import contextlib
+import logging
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
@@ -26,8 +30,29 @@ from depwatch import ranges
 from depwatch.db import session_scope
 from depwatch.models import Advisory, IngestRun, Package
 from depwatch.risk import score_package
+from depwatch.seed import prepare_schema, spawn_seed
+
+log = logging.getLogger("depwatch.api")
+INDEX = Path(__file__).parent / "web" / "index.html"
+
+
+@contextlib.asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # The schema is created before the port opens, because /healthz counts
+    # rows and cannot answer on a database with no tables.
+    prepare_schema()
+    # Seeding, by contrast, runs in the background: blocking startup on two
+    # external APIs would make the platform wait a minute for a health check
+    # that cannot answer yet, which looks like a failed deploy.
+    task = spawn_seed()
+    yield
+    task.cancel()
+    with contextlib.suppress(BaseException):
+        await task
+
 
 app = FastAPI(
+    lifespan=lifespan,
     title="depwatch",
     description="Dependency health and supply-chain risk.",
     version="0.3.0",
@@ -108,6 +133,11 @@ def _resolve(spec: str | None, package: Package) -> tuple[str | None, str]:
     # A supported range that matches nothing published - a typo, or a version
     # yanked from the registry.
     return package.latest_version, "no-matching-version"
+
+
+@app.get("/", include_in_schema=False)
+def index() -> FileResponse:
+    return FileResponse(INDEX)
 
 
 @app.get("/healthz")

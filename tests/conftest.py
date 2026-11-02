@@ -1,3 +1,12 @@
+import os
+
+# Must be set before anything imports the app: creating a TestClient runs the
+# lifespan hook, and seeding reaches out to npm and OSV for real.
+os.environ.setdefault("SEED_ON_START", "0")
+# Tests bind their own throwaway database; startup must not create a schema in
+# whatever DATABASE_URL happens to point at.
+os.environ.setdefault("INIT_DB_ON_START", "0")
+
 import httpx
 import pytest
 

@@ -1,0 +1,50 @@
+# Render blueprint.
+#
+# With this file on the default branch, "New > Blueprint" stands the whole
+# thing up from the repository - no console clicking to reproduce, and the
+# deployment configuration is reviewable in the same diff as the code.
+
+services:
+  - type: web
+    name: depwatch
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install .
+    startCommand: uvicorn depwatch.api:app --host 0.0.0.0 --port $PORT
+
+    # /healthz answers from the database, so this checks the engine and the
+    # schema, not just that a process is listening. The app creates its tables
+    # before the port opens for exactly this reason.
+    healthCheckPath: /healthz
+
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+
+      # SQLite on the instance's own disk, deliberately.
+      #
+      # The free tier gives an ephemeral filesystem and spins the instance down
+      # when idle, so this database does not survive a restart. That is a fair
+      # trade here: the warehouse is derived data that rebuilds from npm and
+      # OSV in about a minute, and the alternative - Render's free Postgres -
+      # expires after a month and leaves a dead link behind, which is the
+      # failure mode worth avoiding on something recruiters click.
+      #
+      # For a persistent instance: add a `databases:` block, point DATABASE_URL
+      # at its connection string via fromDatabase, and change buildCommand to
+      # `pip install ".[postgres]"`. Nothing in the application changes.
+      - key: DATABASE_URL
+        value: sqlite:////tmp/depwatch/depwatch.db
+
+      # The raw zone lands here. Ephemeral too, which is the honest shape of a
+      # free instance: replay-from-disk works within the life of one instance.
+      - key: RAW_DIR
+        value: /tmp/depwatch/raw
+
+      # Fill an empty instance in the background on boot, so a cold start shows
+      # real data instead of an empty table.
+      - key: SEED_ON_START
+        value: "1"
+      - key: INIT_DB_ON_START
+        value: "1"

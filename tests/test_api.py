@@ -193,3 +193,48 @@ def test_bare_names_are_scored_against_latest(seeded):
     assert report["requested_range"] is None
     assert report["resolution"] == "latest"
     assert report["scored_version"] == "5.3.0"
+
+
+def test_startup_creates_the_schema_before_the_port_opens(tmp_path, monkeypatch):
+    """The deploy race, as a test.
+
+    Render sends a health check as soon as the port is listening. /healthz
+    counts rows, so on a fresh instance - where nothing has ever run `init-db`
+    and seeding is still in flight - it has to find tables already there. If it
+    500s instead, the platform reports a working deploy as a failed one.
+
+    Using TestClient as a context manager is what runs the lifespan hook; the
+    other tests here deliberately do not, so they keep their own database.
+    """
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'fresh.db'}")
+    monkeypatch.setenv("INIT_DB_ON_START", "1")
+    monkeypatch.setenv("SEED_ON_START", "0")
+
+    with TestClient(app) as fresh:
+        body = fresh.get("/healthz").json()
+
+    assert body["status"] == "ok"
+    assert body["packages"] == 0
+    assert body["last_run"] is None
+
+
+def test_startup_can_be_told_not_to_touch_the_schema(tmp_path, monkeypatch):
+    """Where migrations are run from outside, startup stays out of the way."""
+    target = tmp_path / "untouched.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{target}")
+    monkeypatch.setenv("INIT_DB_ON_START", "0")
+    monkeypatch.setenv("SEED_ON_START", "0")
+
+    with TestClient(app):
+        pass
+
+    assert not target.exists()
+
+
+def test_the_dashboard_is_served_at_the_root(seeded):
+    page = seeded.get("/")
+    assert page.status_code == 200
+    assert "text/html" in page.headers["content-type"]
+    # The page drives itself from these three endpoints.
+    for endpoint in ("/healthz", "/analyse", "/packages"):
+        assert endpoint in page.text
