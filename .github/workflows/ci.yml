@@ -40,10 +40,16 @@ jobs:
       - name: Ingest and analyse real packages
         env:
           DATABASE_URL: sqlite:///smoke.db
+          # The runner's own token. Unauthenticated GitHub allows 60 requests
+          # an hour, which is not enough to prove anything.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python -m depwatch.cli migrate
           python -m depwatch.cli ingest express react lodash
           python -m depwatch.cli advisories express react lodash
+          # Live GitHub enrichment: proves the URL shapes, the contributor
+          # count read out of a Link header, and the auth path.
+          python -m depwatch.cli enrich
           python -m depwatch.cli runs
           # Prove the whole chain, not just ingestion: the API must answer
           # from what the run just wrote.
@@ -58,6 +64,14 @@ jobs:
           body = c.post("/analyse", json={"names": ["express", "react", "lodash"]}).json()
           assert body["summary"]["analysed"] == 3, body
           assert not body["unknown"], body
+
+          # The GitHub enrichment must have reached the scorer, not just the
+          # database. The projection handed to the scorer once omitted these
+          # columns, so every signal was inert and nothing errored.
+          enriched = [p for p in body["analysed"] if p.get("repo_full_name")]
+          assert len(enriched) == 3, [p["name"] for p in body["analysed"]]
+          assert all(p["repo_contributors"] for p in enriched), enriched
+          print("enriched:", {p["name"]: p["repo_full_name"] for p in enriched})
 
           # Range resolution must change the verdict, not just the report: an
           # old lodash pin carries advisories that the current release fixed.

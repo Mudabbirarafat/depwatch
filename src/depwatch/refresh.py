@@ -16,10 +16,12 @@ import logging
 from sqlalchemy import select
 
 from depwatch.db import session_scope
+from depwatch.enrich import enrich_github
 from depwatch.ingest import ingest_advisories, ingest_npm
 from depwatch.models import Package
 from depwatch.scores import rescore
 from depwatch.seed import SEED_PACKAGES
+from depwatch.sources import github
 
 log = logging.getLogger("depwatch.refresh")
 
@@ -38,10 +40,24 @@ async def refresh(names: list[str] | None = None) -> dict:
     log.info("refresh started", extra={"packages": len(names)})
     packages = await ingest_npm(names)
     advisories = await ingest_advisories(names)
-    # The stored score is derived from both of those, so it has to follow them
-    # or /packages would serve an ordering based on the previous run's data.
+    # Only with a token. Unauthenticated GitHub allows 60 requests an hour, so
+    # an unconfigured instance would enrich thirty packages and spend the rest
+    # of the hour failing - better to skip it and say so.
+    enriched = None
+    if github.authenticated():
+        enriched = await enrich_github()
+    else:
+        log.info("no GITHUB_TOKEN; skipping enrichment")
+
+    # The stored score is derived from all of the above, so it has to follow
+    # them or /packages would serve an ordering based on the previous run.
     scored = rescore()
-    summary = {"packages": packages, "advisories": advisories, "scored": scored}
+    summary = {
+        "packages": packages,
+        "advisories": advisories,
+        "enriched": enriched,
+        "scored": scored,
+    }
     log.info(
         "refresh finished",
         extra={

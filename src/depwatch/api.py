@@ -33,6 +33,7 @@ from depwatch.auth import require_token
 from depwatch.db import session_scope
 from depwatch.models import Advisory, IngestRun, Package
 from depwatch.risk import score_package
+from depwatch.scores import scoring_row
 from depwatch.seed import prepare_schema, spawn_seed
 from depwatch.sources import normalise_name
 
@@ -156,6 +157,14 @@ class PackageReport(BaseModel):
     band: str
     reasons: list[str]
 
+    # GitHub enrichment, absent for packages hosted elsewhere or with no
+    # declared repository - about 18% of them.
+    repo_full_name: str | None = None
+    repo_archived: bool | None = None
+    repo_pushed_at: datetime | None = None
+    repo_contributors: int | None = None
+    repo_stars: int | None = None
+
 
 class AnalyseResponse(BaseModel):
     analysed: list[PackageReport]
@@ -191,6 +200,11 @@ def _row_to_dict(package: Package) -> dict:
         "maintainers": package.maintainers,
         "deprecated": package.deprecated,
         "last_published_at": package.last_published_at,
+        "repo_full_name": package.repo_full_name,
+        "repo_archived": package.repo_archived,
+        "repo_pushed_at": package.repo_pushed_at,
+        "repo_contributors": package.repo_contributors,
+        "repo_stars": package.repo_stars,
     }
 
 
@@ -358,7 +372,7 @@ def analyse(request: AnalyseRequest) -> AnalyseResponse:
             scored_version, resolution = _resolve(spec, package)
             found = by_package.get(name, [])
             result = score_package(
-                _row_to_dict(package), found, effective_version=scored_version
+                scoring_row(package), found, effective_version=scored_version
             )
 
             reasons = list(result.reasons)

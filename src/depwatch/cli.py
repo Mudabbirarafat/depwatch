@@ -14,6 +14,7 @@ from pathlib import Path
 
 from depwatch import gates, logs
 from depwatch.db import session_scope
+from depwatch.enrich import enrich_github
 from depwatch.ingest import ingest_advisories, ingest_npm
 from depwatch.migrate import upgrade_to_head
 from depwatch.models import IngestRun
@@ -69,6 +70,14 @@ def cmd_seed(args: argparse.Namespace) -> int:
 
 def cmd_refresh(args: argparse.Namespace) -> int:
     print(json.dumps(asyncio.run(refresh(args.names or None)), indent=2, default=str))
+    return 0
+
+
+def cmd_enrich(args: argparse.Namespace) -> int:
+    summary = asyncio.run(enrich_github(args.ecosystem, limit=args.limit))
+    print(json.dumps(summary, indent=2, default=str))
+    # The score uses the signals this just wrote, so it has to follow.
+    print(json.dumps(rescore(args.ecosystem), indent=2, default=str))
     return 0
 
 
@@ -144,6 +153,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_refresh = sub.add_parser("refresh", help="re-ingest everything already known")
     p_refresh.add_argument("names", nargs="*", help="override which packages to refresh")
     p_refresh.set_defaults(func=cmd_refresh)
+
+    p_enrich = sub.add_parser(
+        "enrich", help="add GitHub signals to packages that have a repository there"
+    )
+    p_enrich.add_argument("--ecosystem", default=None, help="only this ecosystem")
+    p_enrich.add_argument("--limit", type=int, default=None, help="stop after this many")
+    p_enrich.set_defaults(func=cmd_enrich)
 
     p_rescore = sub.add_parser("rescore", help="recompute the materialised score")
     p_rescore.add_argument("--ecosystem", default=None, help="only this ecosystem")

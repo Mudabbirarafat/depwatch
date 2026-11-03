@@ -1,4 +1,5 @@
 import type { PackageReport } from '../api'
+import { RepoSignals } from './RepoSignals'
 import { ScoreBadge } from './ScoreBadge'
 
 /**
@@ -31,6 +32,7 @@ export function ReportTable({ rows }: { rows: PackageReport[] }) {
                   <li key={reason}>{reason}</li>
                 ))}
               </ul>
+              <RepoSignals report={row} />
               {/* On a narrow screen the range column is hidden, so the
                   resolved version moves under the name rather than vanishing. */}
               <div className="mt-1 font-mono text-xs text-zinc-500 sm:hidden dark:text-zinc-400">

@@ -28,6 +28,18 @@ SOLE_MAINTAINER_POINTS = 15
 NO_LICENSE_POINTS = 10
 UNFIXED_ADVISORY_POINTS = 15
 
+# An archived repository is the only *declared* end-of-life signal available
+# for a PyPI package, which has no deprecation flag at all, and it is a far
+# more deliberate act than letting releases lapse. Weighted like deprecation
+# because it says the same thing.
+ARCHIVED_POINTS = 40
+
+# Maintainers and contributors are not the same measurement: one is who may
+# publish, the other is who writes the code. A package can have five
+# publishers and one author. Worth less on its own, and it stacks with the
+# maintainer rule on purpose when both are true.
+SOLE_CONTRIBUTOR_POINTS = 10
+
 
 @dataclass
 class RiskResult:
@@ -114,22 +126,42 @@ def score_package(
         score += DEPRECATED_POINTS
         reasons.append("package is deprecated")
 
+    if package.get("repo_archived"):
+        score += ARCHIVED_POINTS
+        reasons.append("repository is archived")
+
+    # Prefer the last commit over the last release when both are known.
+    #
+    # They answer different questions and the commit is the better one: a
+    # package can go a year without a release while being actively worked on,
+    # and can publish a version bump the week after its last real change. Only
+    # one of the two is counted, so corroborating evidence is not double
+    # charged - the reason says which was used.
+    pushed = package.get("repo_pushed_at")
     published = package.get("last_published_at")
-    if isinstance(published, datetime):
+    activity, what = (
+        (pushed, "commit") if isinstance(pushed, datetime) else (published, "release")
+    )
+    if isinstance(activity, datetime):
         # Compare naive-to-naive; registry timestamps carry a zone, `now` may not.
-        reference = now if now.tzinfo == published.tzinfo else now.replace(tzinfo=published.tzinfo)
-        age = reference - published
+        reference = now if now.tzinfo == activity.tzinfo else now.replace(tzinfo=activity.tzinfo)
+        age = reference - activity
         if age >= ABANDONED_AFTER:
             score += ABANDONED_POINTS
-            reasons.append(f"no release in {age.days // 365} years")
+            reasons.append(f"no {what} in {age.days // 365} years")
         elif age >= STALE_AFTER:
             score += STALE_POINTS
-            reasons.append("no release in over a year")
+            reasons.append(f"no {what} in over a year")
 
     maintainers = package.get("maintainers")
     if isinstance(maintainers, int) and maintainers <= 1:
         score += SOLE_MAINTAINER_POINTS
         reasons.append("single maintainer")
+
+    contributors = package.get("repo_contributors")
+    if isinstance(contributors, int) and contributors <= 1:
+        score += SOLE_CONTRIBUTOR_POINTS
+        reasons.append("one contributor")
 
     if not package.get("license"):
         score += NO_LICENSE_POINTS

@@ -62,6 +62,25 @@ class Package(Base):
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    # Enrichment from GitHub, for the packages whose repository is there.
+    #
+    # The registries do not carry maintenance signals worth much: npm's
+    # deprecation flag is rarely set and PyPI has none. An archived repository
+    # is a deliberate statement that a project is over, and the last push is a
+    # better activity signal than the last release.
+    #
+    # All nullable, because enrichment is best-effort: 82% of 408 real packages
+    # resolved to a GitHub repository, the rest are hosted elsewhere or declare
+    # no repository at all. Derived like the score columns, and excluded from
+    # the ingest upsert for the same reason.
+    repo_full_name: Mapped[str | None] = mapped_column(String(255))
+    repo_archived: Mapped[bool | None] = mapped_column(Boolean)
+    repo_pushed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    repo_contributors: Mapped[int | None] = mapped_column(Integer)
+    repo_stars: Mapped[int | None] = mapped_column(Integer)
+    repo_open_issues: Mapped[int | None] = mapped_column(Integer)
+    repo_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     # The score at this package's latest version, materialised.
     #
     # Scoring is a Python function, so ordering by risk could not be pushed

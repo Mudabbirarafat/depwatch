@@ -26,7 +26,14 @@ from depwatch.risk import score_package
 log = logging.getLogger("depwatch.scores")
 
 
-def _row(package: Package) -> dict:
+def scoring_row(package: Package) -> dict:
+    """Everything the scorer reads, in one place.
+
+    Shared with the API rather than duplicated, because the two drifting apart
+    is not a visible failure: the GitHub enrichment columns populated and the
+    rules that read them existed, but this projection did not carry them, so
+    the signals were inert and every score was unchanged. Nothing errored.
+    """
     return {
         "name": package.name,
         "ecosystem": package.ecosystem,
@@ -35,6 +42,9 @@ def _row(package: Package) -> dict:
         "maintainers": package.maintainers,
         "deprecated": package.deprecated,
         "last_published_at": package.last_published_at,
+        "repo_archived": package.repo_archived,
+        "repo_pushed_at": package.repo_pushed_at,
+        "repo_contributors": package.repo_contributors,
     }
 
 
@@ -76,7 +86,7 @@ def rescore(ecosystem: str | None = None, db_url: str | None = None) -> dict:
         bands: dict[str, int] = {}
         for package in packages:
             found = by_package.get((package.ecosystem, package.name), [])
-            result = score_package(_row(package), found)
+            result = score_package(scoring_row(package), found)
             package.score = result.score
             package.band = result.band
             package.reasons = list(result.reasons)

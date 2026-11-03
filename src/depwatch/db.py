@@ -98,6 +98,13 @@ def upsert_packages(session: Session, rows: Iterable[dict]) -> int:
             "band",
             "reasons",
             "scored_at",
+            "repo_full_name",
+            "repo_archived",
+            "repo_pushed_at",
+            "repo_contributors",
+            "repo_stars",
+            "repo_open_issues",
+            "repo_checked_at",
         }
     }
     stmt = stmt.on_conflict_do_update(

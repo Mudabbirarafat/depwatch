@@ -12,19 +12,21 @@ maintainer who last shipped years ago — with the reasoning for every score.
 risky example. It runs on a free instance that sleeps when idle, so the first
 request after a quiet spell takes about fifty seconds to wake it.
 
-> **Status:** week seven. npm metadata and OSV advisories ingest end to end,
+> **Status:** week eight. npm metadata and OSV advisories ingest end to end,
 > manifest ranges resolve to the version you would actually install, the API
 > answers from the warehouse, there is a dashboard in front of it, and it is
 > deployed with migrations, bounded endpoints and a logged ingestion path,
 > it refreshes on a schedule behind freshness and quality gates, and the
-> dashboard in front of it is a typed React application. Two ecosystems now:
-> npm and PyPI. GitHub activity signals and dbt marts are next.
+> dashboard in front of it is a typed React application. Two ecosystems, npm
+> and PyPI, enriched with GitHub maintenance signals. dbt marts are next.
 
 ## Pipeline
 
 ```
    registry.npmjs.org  ·  pypi.org        api.osv.dev/v1/query
             │                                         │
+            │        api.github.com ──┐               │
+            │        (enrichment)     │               │
             ▼                             ▼
    ┌─────────────────────────────────────────────┐
    │  ingestion  ·  bounded concurrency,         │
@@ -225,6 +227,33 @@ single-maintainer penalty on one of the best-maintained packages in Python.
 
 Together those took Django at its latest release from **65/high to 0/low**.
 
+**The registries are bad at telling you a package is over.** npm has a
+deprecation flag that most abandoned packages never set; PyPI has none at all.
+So packages are enriched from GitHub, which has three signals the registries
+do not:
+
+*Archived is the one worth the whole module.* A maintainer who has given up
+very often archives the repository, and unlike a lapsed release schedule that
+is a deliberate, unambiguous statement. It is the only *declared* end-of-life
+signal a PyPI package can have.
+
+*The last commit beats the last release.* A package can go a year without
+publishing while being actively worked on. `pyyaml` is exactly that — no
+release in over a year, last commit last month — and scoring the release date
+called it stale. Preferring the commit date dropped it from 12 to 0, and
+dropped `six` from 27 to 15. Only one of the two dates is counted, so
+corroborating evidence is not charged twice, and the reason says which was
+used.
+
+*Contributors are not maintainers.* One is who may publish, the other is who
+writes the code. `certifi` has one maintainer and 43 contributors; `idna` has
+one and 37. Treating those as single-maintainer packages would be wrong, so
+they are separate rules and the contributor one is worth less.
+
+Counting contributors costs one request rather than a pagination loop: ask for
+one contributor per page, and the last page number GitHub reports in the `Link`
+header *is* the count.
+
 **The score is materialised, because risk is not a column.** Scoring is a pure
 Python function, so ordering by it could not be pushed into SQL: `/packages`
 loaded and scored every package in the ecosystem before it could return ten.
@@ -261,8 +290,18 @@ Stated here rather than discovered by you:
   "no published fix" rule but contribute no severity points.
 - **Version comparison handles `MAJOR.MINOR.PATCH[-prerelease]`**, not the full
   semver grammar. Anything it cannot parse is treated as still vulnerable.
-- **No GitHub signals yet** — last commit, contributor count and issue
-  responsiveness are the strongest maintenance indicators and are not in here.
+- **GitHub enrichment reaches 82% of packages.** Measured on 408 real ones:
+  335 resolve to a GitHub repository, 27 are hosted elsewhere — GitLab,
+  Bitbucket, a personal host — and 45 declare no repository at all. The rest
+  are scored without those signals rather than guessed at. GitLab and
+  Bitbucket are not implemented.
+- **Enrichment needs a token.** Unauthenticated GitHub allows 60 requests an
+  hour and each package costs two, so without `GITHUB_TOKEN` the run caps
+  itself at thirty packages and says so. With one it is 5,000 an hour.
+- **Issue responsiveness is still missing.** Open issue counts are stored but
+  unused: a high count means a popular project as often as a neglected one,
+  and the useful version — time to first response — needs the issues API and a
+  great many more requests.
 - **PEP 440 is handled in part.** Measured against the latest release of the
   top 120 PyPI packages, the version parser failed on 1.7%. Prerelease markers
   without a separator (`0.66b2`) are now handled; four-component calendar
@@ -411,6 +450,7 @@ written anywhere:
 | rescore, whole ecosystem | 0.20 s |
 | `GET /packages?limit=50` | **6 ms** median (was 99 ms) |
 | band distribution | 373 low, 25 medium, 2 high |
+| resolve to a GitHub repo | 335 of 408 (82%) |
 
 Two of those numbers moved because the run measured them.
 
@@ -429,10 +469,10 @@ hundred.
 ## Tests
 
 ```bash
-pytest                      # 239 cases
+pytest                      # 291 cases
 ruff check .
 
-cd frontend && npm test     # 28 cases
+cd frontend && npm test     # 35 cases
 ```
 
 Covering registry payload shapes (`repository` as string or object, `license`
@@ -487,16 +527,18 @@ src/depwatch/
   cli.py           migrate, ingest, advisories, seed, refresh, gates, runs, serve
   migrations/      alembic, shipped inside the package
   web/            the built dashboard (generated, not committed)
+  enrich.py        GitHub enrichment, and stopping when the budget is gone
   scores.py        materialising the score, so SQL can order by it
   sources/npm.py   registry projection and its awkward shapes
   sources/pypi.py  the same, and every place the abstraction leaked
   sources/osv.py   advisory projection
+  sources/github.py  repository URLs as registries actually write them
   sources/__init__ the source registry, and package identity per ecosystem
 ```
 
 ## Next
 
-1. GitHub activity: last commit, contributors, issue responsiveness
-2. dbt marts, moving the gates from Python into the transformation layer
+1. dbt marts, moving the gates from Python into the transformation layer
+2. Issue responsiveness — time to first response, not open issue count
 3. A third ecosystem — the abstraction has been tested once, which is once
    more than most, but crates.io would test the version algebra properly

@@ -36,6 +36,14 @@ export interface PackageReport {
   score: number | null
   band: Band
   reasons: string[]
+
+  /** GitHub enrichment. Absent for the ~18% hosted elsewhere or declaring no
+   *  repository, so every field here is optional on purpose. */
+  repo_full_name?: string | null
+  repo_archived?: boolean | null
+  repo_pushed_at?: string | null
+  repo_contributors?: number | null
+  repo_stars?: number | null
 }
 
 export interface AnalyseSummary {
@@ -95,6 +103,11 @@ export interface StoredPackage {
   band: Band
   reasons: string[]
   scored_at: string | null
+  repo_full_name?: string | null
+  repo_archived?: boolean | null
+  repo_pushed_at?: string | null
+  repo_contributors?: number | null
+  repo_stars?: number | null
 }
 
 export interface PackagesResponse {

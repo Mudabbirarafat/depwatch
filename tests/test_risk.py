@@ -205,3 +205,95 @@ def test_unknown_maintainer_count_is_not_treated_as_single():
     )
 
     assert not any("single maintainer" in r for r in result.reasons)
+
+
+# --- GitHub signals ---------------------------------------------------------
+
+def test_an_archived_repository_is_treated_like_a_deprecation():
+    """The only *declared* end-of-life signal a PyPI package can have: npm's
+    deprecation flag is rarely set and PyPI has none at all."""
+    result = score_package(
+        {"name": "x", "latest_version": "1.0.0", "maintainers": 5, "license": "MIT",
+         "repo_archived": True},
+        [],
+    )
+
+    assert result.score >= 40
+    assert "repository is archived" in result.reasons
+
+
+def test_the_last_commit_is_preferred_over_the_last_release():
+    """A package can go a year without a release while being actively worked
+    on. pyyaml is exactly that, and counting the release date called it stale."""
+    now = datetime(2026, 11, 3, tzinfo=UTC)
+    package = {
+        "name": "pyyaml", "latest_version": "6.0.3", "maintainers": 3, "license": "MIT",
+        "last_published_at": now - timedelta(days=500),   # no release in over a year
+        "repo_pushed_at": now - timedelta(days=20),       # but worked on last month
+    }
+
+    result = score_package(package, [], now=now)
+
+    assert result.score == 0, result.reasons
+    assert not any("release" in r for r in result.reasons)
+
+
+def test_the_release_date_is_used_when_there_is_no_commit_date():
+    """Unenriched packages must keep scoring exactly as they did."""
+    now = datetime(2026, 11, 3, tzinfo=UTC)
+    result = score_package(
+        {"name": "x", "latest_version": "1.0.0", "maintainers": 5, "license": "MIT",
+         "last_published_at": now - timedelta(days=500)},
+        [],
+        now=now,
+    )
+
+    assert any("no release in over a year" in r for r in result.reasons)
+
+
+def test_a_dead_repository_is_counted_once_not_twice():
+    """Both dates being old is corroboration, not two separate problems."""
+    now = datetime(2026, 11, 3, tzinfo=UTC)
+    result = score_package(
+        {"name": "x", "latest_version": "1.0.0", "maintainers": 5, "license": "MIT",
+         "last_published_at": now - timedelta(days=1100),
+         "repo_pushed_at": now - timedelta(days=1100)},
+        [],
+        now=now,
+    )
+
+    staleness = [r for r in result.reasons if "no commit" in r or "no release" in r]
+    assert len(staleness) == 1
+    assert "no commit in 3 years" in staleness[0]
+
+
+def test_one_contributor_and_one_maintainer_are_different_measurements():
+    """Who may publish is not who writes the code. certifi has one maintainer
+    and 43 contributors; both being one is worse than either."""
+    now = datetime(2026, 11, 3, tzinfo=UTC)
+    base = {"name": "x", "latest_version": "1.0.0", "license": "MIT",
+            "last_published_at": now - timedelta(days=5)}
+
+    many_authors = score_package({**base, "maintainers": 1, "repo_contributors": 43}, [], now=now)
+    assert "single maintainer" in many_authors.reasons
+    assert "one contributor" not in many_authors.reasons
+
+    both = score_package({**base, "maintainers": 1, "repo_contributors": 1}, [], now=now)
+    assert "one contributor" in both.reasons
+    assert both.score > many_authors.score
+
+
+def test_absent_github_signals_change_nothing():
+    """82% of packages enrich; the rest must score exactly as before."""
+    now = datetime(2026, 11, 3, tzinfo=UTC)
+    package = {"name": "x", "latest_version": "1.0.0", "maintainers": 4, "license": "MIT",
+               "last_published_at": now - timedelta(days=5)}
+
+    without = score_package(package, [], now=now)
+    with_nulls = score_package(
+        {**package, "repo_archived": None, "repo_pushed_at": None, "repo_contributors": None},
+        [], now=now,
+    )
+
+    assert without.score == with_nulls.score == 0
+    assert without.reasons == with_nulls.reasons
