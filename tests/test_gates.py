@@ -13,6 +13,7 @@ from depwatch.api import app
 from depwatch.db import init_db, session_scope
 from depwatch.gates import as_utc, evaluate
 from depwatch.models import Advisory, IngestRun, Package
+from depwatch.scores import rescore
 
 NOW = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
 
@@ -53,6 +54,9 @@ def gate(report: dict, name: str) -> dict:
 def test_a_healthy_warehouse_passes_everything(db):
     add_data()
     add_run(finished_at=NOW - timedelta(hours=2))
+    # A healthy warehouse includes materialised scores: every path that writes
+    # packages rescores, so one without them is not healthy.
+    rescore()
 
     report = evaluate(now=NOW)
     assert report["passed"] is True, report["gates"]
@@ -171,6 +175,7 @@ def test_the_endpoint_answers_503_when_a_gate_fails(db):
 def test_the_endpoint_answers_200_when_everything_passes(db):
     add_data()
     add_run(finished_at=datetime.now(UTC) - timedelta(minutes=5))
+    rescore()
 
     response = TestClient(app).get("/gates")
     assert response.status_code == 200

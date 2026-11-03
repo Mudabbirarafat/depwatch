@@ -12,19 +12,19 @@ maintainer who last shipped years ago — with the reasoning for every score.
 risky example. It runs on a free instance that sleeps when idle, so the first
 request after a quiet spell takes about fifty seconds to wake it.
 
-> **Status:** week six. npm metadata and OSV advisories ingest end to end,
+> **Status:** week seven. npm metadata and OSV advisories ingest end to end,
 > manifest ranges resolve to the version you would actually install, the API
 > answers from the warehouse, there is a dashboard in front of it, and it is
 > deployed with migrations, bounded endpoints and a logged ingestion path,
 > it refreshes on a schedule behind freshness and quality gates, and the
-> dashboard in front of it is a typed React application. PyPI, GitHub activity
-> signals and dbt marts are next.
+> dashboard in front of it is a typed React application. Two ecosystems now:
+> npm and PyPI. GitHub activity signals and dbt marts are next.
 
 ## Pipeline
 
 ```
-   registry.npmjs.org            api.osv.dev/v1/query
-            │                             │
+   registry.npmjs.org  ·  pypi.org        api.osv.dev/v1/query
+            │                                         │
             ▼                             ▼
    ┌─────────────────────────────────────────────┐
    │  ingestion  ·  bounded concurrency,         │
@@ -200,6 +200,45 @@ them, and `/healthz` reads the newest run straight off the primary key without
 a sort. Adding more would cost writes and buy nothing. A test asserts the plans
 so that stays true.
 
+**A second ecosystem is the only honest test of a pluggable one.** "Sources
+are pluggable" was a claim in this README until PyPI was plugged in, and doing
+it found three bugs that one ecosystem could never have surfaced — all three
+inflating risk scores, which on a risk tool is the worst direction to be wrong
+in.
+
+*Package identity is not universal.* Asking PyPI for `django` returns a
+document named `Django`, and `pyyaml` returns `PyYAML`. The package row was
+stored under the display name and the advisories under the name OSV was asked
+for, so they could never join — every PyPI package whose display name was not
+already lowercase scored as if it had no advisories at all. Sources now answer
+`normalise()`: PEP 503 for PyPI, identity for npm. That function did not exist
+until something needed it.
+
+*An advisory can bound itself from above instead of naming a fix.*
+GHSA-h95j-h2rv-qrg4 affects Django up to 1.3.1 via `last_affected` and names no
+`fixed` event, so reading only `fixed` recorded it as never fixed — a 2012
+advisory counting against Django 6.1.2 and every future release.
+
+*Zero maintainers is never a real answer.* Django's PyPI ownership is
+`{"organization": "django", "roles": []}`. Counting that as zero fired the
+single-maintainer penalty on one of the best-maintained packages in Python.
+
+Together those took Django at its latest release from **65/high to 0/low**.
+
+**The score is materialised, because risk is not a column.** Scoring is a pure
+Python function, so ordering by it could not be pushed into SQL: `/packages`
+loaded and scored every package in the ecosystem before it could return ten.
+The score at each package's latest version is now stored and indexed, and the
+endpoint is an `ORDER BY ... LIMIT`. Measured on 400 real packages, that is
+**99 ms → 6 ms, 16× faster**, and it stops growing with the warehouse.
+
+The cost is the usual one for anything derived: it can go stale. So `scored_at`
+records when it was computed, a gate reports any package carrying no score, and
+the ingest upsert explicitly excludes those columns — an ingest row has no
+score in it, so letting the upsert write them would blank every score on every
+run. `/analyse` still scores live, because it answers for the version in *your*
+manifest, and its 200-package cap is what makes that affordable.
+
 **Scoring is a pure function.** No database, no network, no clock except the
 one passed in. Every weight in `risk.py` is stated and directly tested, so you
 can disagree with a specific rule rather than with a black box.
@@ -224,6 +263,17 @@ Stated here rather than discovered by you:
   semver grammar. Anything it cannot parse is treated as still vulnerable.
 - **No GitHub signals yet** — last commit, contributor count and issue
   responsiveness are the strongest maintenance indicators and are not in here.
+- **PEP 440 is handled in part.** Measured against the latest release of the
+  top 120 PyPI packages, the version parser failed on 1.7%. Prerelease markers
+  without a separator (`0.66b2`) are now handled; four-component calendar
+  versions (`2026.9.21.13`) are not, because supporting them means
+  variable-length release tuples and a different shape for every caller.
+  Post-releases (`1.0.post1`) are deliberately left unparseable: a post-release
+  sorts *after* its release, so treating it as equal is the one direction that
+  would exonerate a vulnerable version. All three fail towards "still risky".
+- **PyPI has no deprecation flag**, so a yanked latest release or the
+  `Development Status :: 7 - Inactive` classifier stands in for one. A yank is
+  per release rather than per project, so this is an approximation.
 - **The rate limit is per instance.** It lives in the process, so two instances
   mean two independent allowances and a restart forgets every count. A shared
   limiter needs Redis, which is not worth a dependency at this size.
@@ -345,13 +395,41 @@ written anywhere:
 | `DEPWATCH_URL` | your instance's URL |
 | `DEPWATCH_REFRESH_TOKEN` | the `REFRESH_TOKEN` Render generated, from its dashboard |
 
+## Measured, not asserted
+
+400 of the most-downloaded PyPI packages, ingested for real:
+
+| | |
+|---|---|
+| packages / advisories | 400 / 1,723 |
+| database | 1.5 MB |
+| metadata ingest | 23 s (17 packages/s) |
+| advisory ingest | 8.5 s per 100 packages |
+| rescore, whole ecosystem | 0.20 s |
+| `GET /packages?limit=50` | **6 ms** median (was 99 ms) |
+| band distribution | 373 low, 25 medium, 2 high |
+
+Two of those numbers moved because the run measured them.
+
+`/packages` was 99 ms and O(packages): it scored the entire ecosystem to return
+a page of fifty. Materialising the score made it 6 ms and O(page).
+
+Advisory ingestion took **208 s against 23 s** for metadata over the same 400
+packages, because the OSV loop awaited each round trip in turn while the
+registry fetch had always been concurrent. The client's semaphore already
+bounded concurrency, so the loop was contributing nothing but waiting. The same
+100 packages now take **8.5 s instead of 56.6 s**, for the same 754 advisories.
+
+Neither was visible at ten packages, which is the point of running at four
+hundred.
+
 ## Tests
 
 ```bash
-pytest                      # 191 cases
+pytest                      # 239 cases
 ruff check .
 
-cd frontend && npm test     # 21 cases
+cd frontend && npm test     # 28 cases
 ```
 
 Covering registry payload shapes (`repository` as string or object, `license`
@@ -406,13 +484,16 @@ src/depwatch/
   cli.py           migrate, ingest, advisories, seed, refresh, gates, runs, serve
   migrations/      alembic, shipped inside the package
   web/            the built dashboard (generated, not committed)
+  scores.py        materialising the score, so SQL can order by it
   sources/npm.py   registry projection and its awkward shapes
+  sources/pypi.py  the same, and every place the abstraction leaked
   sources/osv.py   advisory projection
+  sources/__init__ the source registry, and package identity per ecosystem
 ```
 
 ## Next
 
-1. A materialised score, so `/packages` stops being O(packages) per request
-2. PyPI source behind the same interface
-3. GitHub activity: last commit, contributors, issue responsiveness
-4. dbt marts, moving the gates from Python into the transformation layer
+1. GitHub activity: last commit, contributors, issue responsiveness
+2. dbt marts, moving the gates from Python into the transformation layer
+3. A third ecosystem — the abstraction has been tested once, which is once
+   more than most, but crates.io would test the version algebra properly

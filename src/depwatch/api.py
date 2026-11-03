@@ -409,50 +409,54 @@ def list_packages(
 ) -> dict:
     """Everything known, worst first - the dashboard's backing query.
 
-    Scoring is a Python function, so the ordering cannot be pushed into SQL:
-    every package has to be scored before the worst of them can be known.
-    Sorting therefore happens *before* the limit is applied. Limiting first -
-    which this did until it was measured - returns an arbitrary slice of the
-    table, sorts those few among themselves, and calls the result the worst
-    packages. At ten packages the two are indistinguishable, which is exactly
-    why it survived.
+    This used to score every package in the ecosystem in Python before it could
+    order them, because risk is a function and not a column. It is now an
+    indexed ORDER BY ... LIMIT against the materialised score, so the work is
+    bounded by the page rather than by the warehouse. See scores.py for the
+    trade that makes.
 
-    The consequence is that the page size bounds the response and not the
-    work: a request is O(packages in the ecosystem) whatever the limit says.
-    That is affordable at this size and is the reason the next step is a
-    materialised score column rather than a larger page.
+    A package with no stored score sorts last and is reported as `unscored`
+    rather than as a zero, which would read as "we checked and it is clean".
     """
     with session_scope() as session:
-        packages = session.scalars(
-            select(Package).where(Package.ecosystem == ecosystem).order_by(Package.name)
-        ).all()
-        # Scoped to the ecosystem being scored. Fetching the whole advisory
-        # table regardless of ecosystem was the other half of the same bug.
-        # Filtering by the package names instead would be narrower still, but
-        # every package in the ecosystem is being scored anyway, and a list of
-        # names that long runs into SQLite's bound-parameter limit.
-        advisories = session.scalars(
-            select(Advisory).where(Advisory.ecosystem == ecosystem)
-        ).all()
-
-        by_package: dict[str, list[dict]] = {}
-        for advisory in advisories:
-            by_package.setdefault(advisory.package_name, []).append(
-                {
-                    "osv_id": advisory.osv_id,
-                    "severity": advisory.severity,
-                    "fixed_version": advisory.fixed_version,
-                    "last_affected": advisory.last_affected,
-                }
+        total = (
+            session.scalar(
+                select(func.count()).select_from(Package).where(Package.ecosystem == ecosystem)
             )
+            or 0
+        )
 
-        rows = []
-        for package in packages:
-            row = _row_to_dict(package)
-            found = by_package.get(package.name, [])
-            result = score_package(row, found)
-            rows.append({**row, "advisories": len(found), **result.as_dict()})
+        page = session.scalars(
+            select(Package)
+            .where(Package.ecosystem == ecosystem)
+            .order_by(Package.score.desc().nullslast(), Package.name)
+            .limit(limit)
+        ).all()
 
-    rows.sort(key=lambda r: (-r["score"], r["name"]))
-    page = rows[:limit]
-    return {"count": len(page), "total": len(rows), "packages": page}
+        # One grouped count for the page's packages only - at most MAX_PAGE
+        # names, so this stays well inside SQLite's bound-parameter limit.
+        counts: dict[str, int] = {}
+        if page:
+            rows = session.execute(
+                select(Advisory.package_name, func.count())
+                .where(
+                    Advisory.ecosystem == ecosystem,
+                    Advisory.package_name.in_([p.name for p in page]),
+                )
+                .group_by(Advisory.package_name)
+            ).all()
+            counts = dict(rows)
+
+        packages = [
+            {
+                **_row_to_dict(package),
+                "advisories": counts.get(package.name, 0),
+                "score": package.score,
+                "band": package.band or "unscored",
+                "reasons": package.reasons or [],
+                "scored_at": package.scored_at,
+            }
+            for package in page
+        ]
+
+    return {"count": len(packages), "total": total, "packages": packages}

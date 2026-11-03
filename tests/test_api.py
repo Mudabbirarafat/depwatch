@@ -14,6 +14,7 @@ from depwatch import api
 from depwatch.api import app, names_from_manifest
 from depwatch.db import init_db, session_scope
 from depwatch.models import Advisory, Package
+from depwatch.scores import rescore
 
 
 @pytest.fixture
@@ -271,7 +272,11 @@ def test_packages_orders_before_limiting(seeded):
 
     `aaa-safe` sorts first by name and scores nothing; `abandoned-thing` is the
     risky one. Asking for a single row has to return the risky one, which only
-    happens if the sort runs before the limit.
+    happens if the ordering covers the whole ecosystem rather than the page.
+
+    The ordering is now an indexed ORDER BY against the materialised score, so
+    the scores have to exist before it can mean anything - which is the point
+    of `rescore` being part of every path that writes packages.
     """
     with session_scope() as session:
         session.add(
@@ -281,11 +286,34 @@ def test_packages_orders_before_limiting(seeded):
                 last_published_at=datetime.now(UTC) - timedelta(days=3),
             )
         )
+    rescore("npm")
 
     body = seeded.get("/packages?limit=1").json()
     assert body["total"] == 3
     assert body["count"] == 1
     assert body["packages"][0]["name"] == "abandoned-thing"
+    assert body["packages"][0]["band"] == "high"
+
+
+def test_an_unscored_package_is_reported_as_such_not_as_a_zero(seeded):
+    """A stored score of nothing means "not computed", and reporting it as 0
+    would read as "we checked and it is clean" - the wrong way to be wrong."""
+    with session_scope() as session:
+        session.add(
+            Package(
+                ecosystem="npm", name="zzz-never-scored", latest_version="1.0.0",
+                deprecated=False,
+            )
+        )
+
+    page = seeded.get("/packages?limit=50").json()["packages"]
+    unscored = [p for p in page if p["name"] == "zzz-never-scored"]
+
+    assert unscored, "the package should still be listed"
+    assert unscored[0]["score"] is None
+    assert unscored[0]["band"] == "unscored"
+    # and it sorts last, behind everything with a real score
+    assert page[-1]["name"] == "zzz-never-scored"
 
 
 def test_packages_only_counts_advisories_from_its_own_ecosystem(seeded):

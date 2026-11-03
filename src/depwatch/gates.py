@@ -71,6 +71,12 @@ def evaluate(now: datetime | None = None) -> dict:
     with session_scope() as session:
         packages = session.scalar(select(func.count()).select_from(Package)) or 0
         advisories = session.scalar(select(func.count()).select_from(Advisory)) or 0
+        unscored = (
+            session.scalar(
+                select(func.count()).select_from(Package).where(Package.score.is_(None))
+            )
+            or 0
+        )
         last_finished = session.scalars(
             select(IngestRun)
             .where(IngestRun.status.in_(FINISHED_STATUSES), IngestRun.finished_at.is_not(None))
@@ -91,7 +97,11 @@ def evaluate(now: datetime | None = None) -> dict:
             else None
         )
 
-    gates = [_warehouse_has_data(packages), _advisories_were_fetched(advisories)]
+    gates = [
+        _warehouse_has_data(packages),
+        _advisories_were_fetched(advisories),
+        _everything_is_scored(packages, unscored),
+    ]
 
     if last is None:
         gates.append(Gate("data_is_fresh", False, "no run has finished yet"))
@@ -133,6 +143,22 @@ def _advisories_were_fetched(advisories: int) -> Gate:
         "advisories_were_fetched",
         advisories > 0,
         f"{advisories} advisories" if advisories else "no advisories at all, which is suspicious",
+    )
+
+
+def _everything_is_scored(packages: int, unscored: int) -> Gate:
+    """The materialised score is derived, so it can silently fall behind.
+
+    A package with no score is served as `unscored` and sorts last, so it is
+    not dangerous - but it does mean the ordering is incomplete, and nothing
+    else would ever mention it.
+    """
+    if packages == 0:
+        return Gate("packages_are_scored", False, "the warehouse is empty")
+    return Gate(
+        "packages_are_scored",
+        unscored == 0,
+        "all scored" if unscored == 0 else f"{unscored} of {packages} have no stored score",
     )
 
 

@@ -2,7 +2,9 @@
 
 Three tables, and the split matters:
 
-* `packages` is the mart - one current row per package, upserted.
+* `packages` is the mart - one current row per package, upserted. It also
+  carries the *materialised* score at the package's latest version, which is
+  derived rather than fetched: see the note on those columns.
 * `ingest_runs` is run metadata. Every run records what it saw and whether it
   finished. Without this a pipeline is a black box; with it the dashboard can
   show the last ten runs and a freshness check has something to read.
@@ -16,6 +18,7 @@ from sqlalchemy import (
     JSON,
     Boolean,
     DateTime,
+    Index,
     Integer,
     String,
     Text,
@@ -34,7 +37,12 @@ class Base(DeclarativeBase):
 
 class Package(Base):
     __tablename__ = "packages"
-    __table_args__ = (UniqueConstraint("ecosystem", "name", name="uq_packages_eco_name"),)
+    __table_args__ = (
+        UniqueConstraint("ecosystem", "name", name="uq_packages_eco_name"),
+        # The ordering /packages asks for. Without it, materialising the score
+        # would only move the sort from Python into a SQL filesort.
+        Index("ix_packages_eco_score", "ecosystem", "score"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     ecosystem: Mapped[str] = mapped_column(String(32))
@@ -53,6 +61,26 @@ class Package(Base):
 
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    # The score at this package's latest version, materialised.
+    #
+    # Scoring is a Python function, so ordering by risk could not be pushed
+    # into SQL: /packages had to load and score every package in the ecosystem
+    # before it could return the worst ten of them. Storing the result makes
+    # that an indexed ORDER BY ... LIMIT.
+    #
+    # Derived, not fetched. Like first_seen_at, these are excluded from the
+    # ingest upsert - an ingest row does not carry them, so letting the upsert
+    # write them would blank the scores on every run. `depwatch rescore`
+    # recomputes them, and a gate reports any package that has none.
+    #
+    # /analyse still scores live: it answers for the version in *your*
+    # manifest, which is not knowable in advance. It is bounded to 200
+    # packages per request, so it can afford to.
+    score: Mapped[int | None] = mapped_column(Integer)
+    band: Mapped[str | None] = mapped_column(String(16))
+    reasons: Mapped[list | None] = mapped_column(JSON)
+    scored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class IngestRun(Base):

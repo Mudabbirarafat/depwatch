@@ -6,11 +6,13 @@ import {
   getGates,
   getHealth,
   getPackages,
-  RISKY_EXAMPLE,
+  RISKY_EXAMPLES,
   type AnalyseResponse,
+  type Ecosystem,
   type PackageReport,
   type StoredPackage,
 } from './api'
+import { EcosystemTabs } from './components/EcosystemTabs'
 import { GatePanel } from './components/GatePanel'
 import { ManifestForm } from './components/ManifestForm'
 import { ReportTable } from './components/ReportTable'
@@ -40,6 +42,7 @@ function healthLine(
 }
 
 export default function App() {
+  const [ecosystem, setEcosystem] = useState<Ecosystem>('npm')
   const [input, setInput] = useState('')
   const [result, setResult] = useState<AnalyseResponse | null>(null)
   const [truncated, setTruncated] = useState(0)
@@ -55,7 +58,7 @@ export default function App() {
   const gates = useQuery({ queryKey: ['gates'], queryFn: getGates })
 
   const analysis = useMutation({
-    mutationFn: analyse,
+    mutationFn: (text: string) => analyse(text, ecosystem),
     onSuccess: (data) => {
       setResult(data)
       setTruncated(0)
@@ -63,7 +66,7 @@ export default function App() {
   })
 
   const everything = useMutation({
-    mutationFn: () => getPackages(),
+    mutationFn: () => getPackages(200, ecosystem),
     onSuccess: (data) => {
       setResult({
         analysed: data.packages.map(asReport),
@@ -88,9 +91,19 @@ export default function App() {
   // The example is passed to the mutation directly rather than read back from
   // state: setInput schedules a render, it does not update `input` here.
   const loadExample = () => {
-    const text = JSON.stringify(RISKY_EXAMPLE, null, 2)
+    const text = JSON.stringify(RISKY_EXAMPLES[ecosystem], null, 2)
     setInput(text)
     analysis.mutate(text)
+  }
+
+  /** Switching registry invalidates whatever is on screen: the scores, the
+   *  resolved versions and the example manifest all belong to one ecosystem. */
+  const switchEcosystem = (next: Ecosystem) => {
+    if (next === ecosystem) return
+    setEcosystem(next)
+    setResult(null)
+    setTruncated(0)
+    setInput('')
   }
 
   return (
@@ -105,6 +118,10 @@ export default function App() {
           {healthLine(health.isError, health.isLoading, health.data)}
         </p>
       </header>
+
+      <div className="mb-4">
+        <EcosystemTabs value={ecosystem} onChange={switchEcosystem} disabled={busy} />
+      </div>
 
       {gates.data ? (
         <div className="mb-6">

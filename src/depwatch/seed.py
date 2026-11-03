@@ -22,6 +22,7 @@ from depwatch.db import engine, session_scope
 from depwatch.ingest import ingest_advisories, ingest_npm
 from depwatch.migrate import upgrade_to_head
 from depwatch.models import Advisory, Package
+from depwatch.scores import rescore
 
 log = logging.getLogger("depwatch.seed")
 
@@ -58,9 +59,10 @@ async def seed(names: list[str] | None = None) -> dict:
     log.info("seeding %d packages", len(names))
     packages = await ingest_npm(names)
     advisories = await ingest_advisories(names)
-    log.info("seed complete: %s packages, %s advisories",
-             packages["succeeded"], advisories["advisories"])
-    return {"packages": packages, "advisories": advisories}
+    scored = rescore()
+    log.info("seed complete: %s packages, %s advisories, %s scored",
+             packages["succeeded"], advisories["advisories"], scored["scored"])
+    return {"packages": packages, "advisories": advisories, "scored": scored}
 
 
 def seeding_enabled() -> bool:

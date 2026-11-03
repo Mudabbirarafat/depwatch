@@ -18,6 +18,7 @@ from sqlalchemy import select
 from depwatch.db import session_scope
 from depwatch.ingest import ingest_advisories, ingest_npm
 from depwatch.models import Package
+from depwatch.scores import rescore
 from depwatch.seed import SEED_PACKAGES
 
 log = logging.getLogger("depwatch.refresh")
@@ -37,7 +38,10 @@ async def refresh(names: list[str] | None = None) -> dict:
     log.info("refresh started", extra={"packages": len(names)})
     packages = await ingest_npm(names)
     advisories = await ingest_advisories(names)
-    summary = {"packages": packages, "advisories": advisories}
+    # The stored score is derived from both of those, so it has to follow them
+    # or /packages would serve an ordering based on the previous run's data.
+    scored = rescore()
+    summary = {"packages": packages, "advisories": advisories, "scored": scored}
     log.info(
         "refresh finished",
         extra={

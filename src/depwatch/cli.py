@@ -18,6 +18,7 @@ from depwatch.ingest import ingest_advisories, ingest_npm
 from depwatch.migrate import upgrade_to_head
 from depwatch.models import IngestRun
 from depwatch.refresh import refresh
+from depwatch.scores import rescore
 from depwatch.seed import SEED_PACKAGES, seed
 
 
@@ -68,6 +69,11 @@ def cmd_seed(args: argparse.Namespace) -> int:
 
 def cmd_refresh(args: argparse.Namespace) -> int:
     print(json.dumps(asyncio.run(refresh(args.names or None)), indent=2, default=str))
+    return 0
+
+
+def cmd_rescore(args: argparse.Namespace) -> int:
+    print(json.dumps(rescore(args.ecosystem), indent=2, default=str))
     return 0
 
 
@@ -138,6 +144,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_refresh = sub.add_parser("refresh", help="re-ingest everything already known")
     p_refresh.add_argument("names", nargs="*", help="override which packages to refresh")
     p_refresh.set_defaults(func=cmd_refresh)
+
+    p_rescore = sub.add_parser("rescore", help="recompute the materialised score")
+    p_rescore.add_argument("--ecosystem", default=None, help="only this ecosystem")
+    p_rescore.set_defaults(func=cmd_rescore)
 
     p_gates = sub.add_parser("gates", help="check freshness and quality; exits 1 on a breach")
     p_gates.set_defaults(func=cmd_gates)

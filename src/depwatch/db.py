@@ -86,7 +86,19 @@ def upsert_packages(session: Session, rows: Iterable[dict]) -> int:
         c.name: getattr(stmt.excluded, c.name)
         for c in Package.__table__.columns
         # never overwrite the surrogate key or the first-seen timestamp
-        if c.name not in {"id", "ecosystem", "name", "first_seen_at"}
+        # first_seen_at records when we first learned of the package; the
+        # score columns are derived by `rescore` and are not in an ingest row,
+        # so letting the upsert write them would blank them on every run.
+        if c.name not in {
+            "id",
+            "ecosystem",
+            "name",
+            "first_seen_at",
+            "score",
+            "band",
+            "reasons",
+            "scored_at",
+        }
     }
     stmt = stmt.on_conflict_do_update(
         index_elements=[Package.ecosystem, Package.name], set_=updatable

@@ -7,7 +7,15 @@
  * shapes, so a backend change that breaks them fails the frontend build too.
  */
 
-export type Band = 'low' | 'medium' | 'high'
+export type Band = 'low' | 'medium' | 'high' | 'unscored'
+
+/** The ecosystems the warehouse ingests. Mirrors SOURCES in sources/__init__.py. */
+export type Ecosystem = 'npm' | 'pypi'
+
+export const ECOSYSTEMS: { id: Ecosystem; label: string; example: string }[] = [
+  { id: 'npm', label: 'npm', example: 'package.json' },
+  { id: 'pypi', label: 'PyPI', example: 'requirements' },
+]
 
 export type Resolution = 'latest' | 'resolved' | 'unsupported-range' | 'no-matching-version'
 
@@ -24,7 +32,8 @@ export interface PackageReport {
   scored_version: string | null
   resolution: Resolution
   advisories: number
-  score: number
+  /** null when the warehouse has not scored this package yet. */
+  score: number | null
   band: Band
   reasons: string[]
 }
@@ -82,9 +91,10 @@ export interface StoredPackage {
   deprecated: boolean
   last_published_at: string | null
   advisories: number
-  score: number
+  score: number | null
   band: Band
   reasons: string[]
+  scored_at: string | null
 }
 
 export interface PackagesResponse {
@@ -121,8 +131,8 @@ export const getHealth = () => request<Health>('/healthz')
 
 export const getGates = () => request<GatesReport>('/gates')
 
-export const getPackages = (limit = 200) =>
-  request<PackagesResponse>(`/packages?limit=${limit}`)
+export const getPackages = (limit = 200, ecosystem: Ecosystem = 'npm') =>
+  request<PackagesResponse>(`/packages?limit=${limit}&ecosystem=${ecosystem}`)
 
 /**
  * Work out what to ask the API for, from whatever was pasted.
@@ -134,40 +144,57 @@ export const getPackages = (limit = 200) =>
  * Exported separately from the request so it can be tested as what it is: a
  * pure function from text to a request body.
  */
-export function buildAnalyseBody(input: string): Record<string, unknown> {
+export function buildAnalyseBody(
+  input: string,
+  ecosystem: Ecosystem = 'npm',
+): Record<string, unknown> {
   const text = input.trim()
 
   try {
     const parsed: unknown = JSON.parse(text)
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       // Valid JSON, but not an object - a bare string or number is a name.
-      return { names: text.split(/[\s,]+/).filter(Boolean) }
+      return { ecosystem, names: text.split(/[\s,]+/).filter(Boolean) }
     }
     const manifest = parsed as Record<string, unknown>
     const hasDependencySection =
       'dependencies' in manifest ||
       'devDependencies' in manifest ||
       'peerDependencies' in manifest
-    return hasDependencySection ? { manifest } : { names: Object.keys(manifest) }
+    return hasDependencySection
+      ? { ecosystem, manifest }
+      : { ecosystem, names: Object.keys(manifest) }
   } catch {
-    return { names: text.split(/[\s,]+/).filter(Boolean) }
+    return { ecosystem, names: text.split(/[\s,]+/).filter(Boolean) }
   }
 }
 
-export function analyse(input: string): Promise<AnalyseResponse> {
+export function analyse(input: string, ecosystem: Ecosystem = 'npm'): Promise<AnalyseResponse> {
   return request<AnalyseResponse>('/analyse', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(buildAnalyseBody(input)),
+    body: JSON.stringify(buildAnalyseBody(input, ecosystem)),
   })
 }
 
-export const RISKY_EXAMPLE = {
-  dependencies: {
-    lodash: '4.17.11',
-    minimist: '1.2.0',
-    express: '4.17.1',
-    request: '^2.88.0',
-    'left-pad': '^1.3.0',
+/** A manifest per ecosystem, each pinned to versions that still carry advisories. */
+export const RISKY_EXAMPLES: Record<Ecosystem, unknown> = {
+  npm: {
+    dependencies: {
+      lodash: '4.17.11',
+      minimist: '1.2.0',
+      express: '4.17.1',
+      request: '^2.88.0',
+      'left-pad': '^1.3.0',
+    },
+  },
+  pypi: {
+    dependencies: {
+      django: '3.2.0',
+      pyyaml: '5.3',
+      urllib3: '1.26.4',
+      pillow: '9.0.0',
+      requests: '2.19.0',
+    },
   },
 }

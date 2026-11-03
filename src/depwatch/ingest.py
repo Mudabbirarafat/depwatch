@@ -194,15 +194,23 @@ async def ingest_advisories(
     # joined - see sources/__init__.py.
     names = [normalise_name(ecosystem, n) for n in names]
 
+    # Concurrent, like the registry fetch. This was a sequential loop until a
+    # scale run measured it: 400 packages took 208s of advisory queries against
+    # 23s of metadata, because each OSV round trip waited for the last. The
+    # client's semaphore already bounds the concurrency, so the only thing the
+    # loop was adding was the waiting.
     responses: dict[str, object] = {}
+
+    async def query(name: str) -> None:
+        try:
+            responses[name] = await client.post_json(
+                settings.osv_api, osv.query_payload(name, ecosystem)
+            )
+        except Exception as exc:  # noqa: BLE001 - recorded on the run
+            responses[name] = exc
+
     try:
-        for name in names:
-            try:
-                responses[name] = await client.post_json(
-                    settings.osv_api, osv.query_payload(name, ecosystem)
-                )
-            except Exception as exc:  # noqa: BLE001 - recorded on the run
-                responses[name] = exc
+        await asyncio.gather(*(query(n) for n in names))
     finally:
         if owns_client:
             await client.aclose()
