@@ -34,7 +34,7 @@ function healthLine(
 ): string {
   if (isError) return 'could not reach the API'
   if (isLoading || !data) return 'checking…'
-  if (data.packages === 0) return 'first boot — ingesting seed packages, this takes about a minute…'
+  if (data.packages === 0) return 'first boot — ingesting seed packages, a few seconds…'
 
   const counts = `${data.packages} packages · ${data.advisories} advisories`
   if (!data.last_run) return counts

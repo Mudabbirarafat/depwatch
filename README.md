@@ -325,8 +325,11 @@ Two things in there exist because of how a free instance actually behaves:
 
 **It seeds itself on boot.** The filesystem is ephemeral and the instance
 spins down when idle, so a cold start would otherwise serve an empty table.
-Ten packages ingest in the background on startup, and the page says it is
-still loading until they land. Seeding is *not* allowed to block startup:
+Eighteen packages across both ecosystems ingest in the background on startup —
+**7.8 seconds**, down from about a minute before the advisory queries were made
+concurrent — and the page says it is still loading until they land. Both
+ecosystems, because a registry tab opening onto an empty table reads as broken
+rather than as unseeded. Seeding is *not* allowed to block startup:
 waiting on npm and OSV before opening the port means the platform's first
 health check times out and a working deploy is reported as a failed one.
 
@@ -337,7 +340,7 @@ Both cases are regression-tested in `tests/test_api.py`.
 
 SQLite on instance-local disk is a deliberate choice over Render's free
 Postgres, which expires after a month and leaves a dead link behind. The
-warehouse is derived data and rebuilds in about a minute. Switching to
+warehouse is derived data and rebuilds in under ten seconds. Switching to
 Postgres is a `databases:` block and `pip install ".[postgres]"`; no
 application code changes.
 

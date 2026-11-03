@@ -19,7 +19,7 @@ from sqlalchemy import func, select
 
 from depwatch.config import Settings
 from depwatch.db import engine, session_scope
-from depwatch.ingest import ingest_advisories, ingest_npm
+from depwatch.ingest import ingest_advisories, ingest_packages
 from depwatch.migrate import upgrade_to_head
 from depwatch.models import Advisory, Package
 from depwatch.scores import rescore
@@ -42,6 +42,22 @@ SEED_PACKAGES = [
     "request",
 ]
 
+# The same idea on the other side: widely used, and between them they cover
+# every signal - current releases, an abandoned project, an organisation-owned
+# one, and packages with long advisory histories.
+SEED_PYPI_PACKAGES = [
+    "requests",
+    "django",
+    "flask",
+    "urllib3",
+    "pyyaml",
+    "pillow",
+    "numpy",
+    "distribute",
+]
+
+SEED_SETS = {"npm": SEED_PACKAGES, "pypi": SEED_PYPI_PACKAGES}
+
 
 def package_count() -> int:
     with session_scope() as session:
@@ -53,16 +69,34 @@ def advisory_count() -> int:
         return session.scalar(select(func.count()).select_from(Advisory)) or 0
 
 
-async def seed(names: list[str] | None = None) -> dict:
-    """Ingest metadata then advisories. Idempotent: upserts all the way down."""
-    names = names or SEED_PACKAGES
-    log.info("seeding %d packages", len(names))
-    packages = await ingest_npm(names)
-    advisories = await ingest_advisories(names)
+async def seed(names: list[str] | None = None, ecosystem: str | None = None) -> dict:
+    """Ingest metadata then advisories, for every seeded ecosystem.
+
+    Both of them, because the dashboard offers both and a registry tab that
+    opens onto an empty table reads as broken rather than as unseeded.
+
+    Idempotent: upserts all the way down.
+    """
+    if names:
+        sets = {ecosystem or "npm": names}
+    elif ecosystem:
+        sets = {ecosystem: SEED_SETS[ecosystem]}
+    else:
+        sets = SEED_SETS
+
+    results: dict[str, dict] = {}
+    for eco, eco_names in sets.items():
+        log.info("seeding %d packages", len(eco_names), extra={"ecosystem": eco})
+        packages = await ingest_packages(eco_names, ecosystem=eco)
+        advisories = await ingest_advisories(eco_names, ecosystem=eco)
+        results[eco] = {"packages": packages, "advisories": advisories}
+
     scored = rescore()
-    log.info("seed complete: %s packages, %s advisories, %s scored",
-             packages["succeeded"], advisories["advisories"], scored["scored"])
-    return {"packages": packages, "advisories": advisories, "scored": scored}
+    log.info(
+        "seed complete: %s ecosystems, %s scored",
+        len(results), scored["scored"],
+    )
+    return {**results, "scored": scored}
 
 
 def seeding_enabled() -> bool:
