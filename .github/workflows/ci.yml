@@ -167,6 +167,11 @@ jobs:
           print("first_seen preserved:", first_seen, "fetched:", fetched)
           EOF
 
+      # The score is derived, so it has to follow the ingest - the gate that
+      # checks for unscored packages is what caught this step missing.
+      - name: Materialise the score
+        run: python -m depwatch.cli rescore
+
       - name: The gates read Postgres timestamps correctly
         run: |
           python - <<'EOF'
