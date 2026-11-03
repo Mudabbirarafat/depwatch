@@ -108,5 +108,8 @@ class Advisory(Base):
     summary: Mapped[str | None] = mapped_column(Text)
     aliases: Mapped[list | None] = mapped_column(JSON)
     fixed_version: Mapped[str | None] = mapped_column(String(64))
+    # Set when the advisory bounds itself from above instead of naming a fix.
+    # Without it such an advisory reads as "never fixed" - see sources/osv.py.
+    last_affected: Mapped[str | None] = mapped_column(String(64))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

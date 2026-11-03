@@ -71,14 +71,15 @@ def score_package(
     # The version the consumer would actually install, when the caller has
     # resolved their manifest range; otherwise the package's latest.
     current_version = effective_version or package.get("latest_version")
-    stale_advisories = [
-        a for a in advisories
-        if not advisory_applies(a.get("fixed_version"), current_version)
-    ]
-    advisories = [
-        a for a in advisories
-        if advisory_applies(a.get("fixed_version"), current_version)
-    ]
+    def applies(advisory: dict) -> bool:
+        return advisory_applies(
+            advisory.get("fixed_version"),
+            current_version,
+            advisory.get("last_affected"),
+        )
+
+    stale_advisories = [a for a in advisories if not applies(a)]
+    advisories = [a for a in advisories if applies(a)]
 
     # Advisories: count the worst one fully, then add a smaller amount per
     # extra, so a package with six criticals outranks one with a single
@@ -97,7 +98,14 @@ def score_package(
             score += min(extra * 5, 20)
             reasons.append(f"{extra} further graded advisor{'y' if extra == 1 else 'ies'}")
 
-    unfixed = [a for a in advisories if not a.get("fixed_version")]
+    # "No published fix" means neither a fix nor a stated upper bound. An
+    # advisory that bounds itself from above has effectively been fixed for
+    # anything past that bound, and counting it here was what made a 2012
+    # Django advisory penalise Django 6.
+    unfixed = [
+        a for a in advisories
+        if not a.get("fixed_version") and not a.get("last_affected")
+    ]
     if unfixed:
         score += UNFIXED_ADVISORY_POINTS
         reasons.append(f"{len(unfixed)} advisory with no published fix")

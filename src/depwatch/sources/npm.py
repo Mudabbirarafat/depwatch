@@ -18,6 +18,16 @@ from pydantic import BaseModel, field_validator
 ECOSYSTEM = "npm"
 
 
+def normalise(name: str) -> str:
+    """Identity, deliberately.
+
+    npm answers with the name you asked for, and new package names must already
+    be lowercase, so there is nothing to reconcile. This exists so that every
+    source answers the same question - PyPI's answer is the interesting one.
+    """
+    return name.strip()
+
+
 class NpmPackage(BaseModel):
     """Validated projection of one registry document."""
 

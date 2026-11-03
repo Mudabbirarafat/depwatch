@@ -95,3 +95,73 @@ def test_query_payload_maps_the_ecosystem_name():
     """OSV spells it PyPI, we spell it pypi."""
     assert osv.query_payload("flask", "pypi")["package"]["ecosystem"] == "PyPI"
     assert osv.query_payload("express", "npm")["package"]["ecosystem"] == "npm"
+
+
+def test_an_advisory_can_bound_itself_from_above_instead_of_naming_a_fix():
+    """GHSA-h95j-h2rv-qrg4 affects Django up to 1.3.1 and names no fix.
+
+    Reading only `fixed` recorded it as "never fixed", so it counted against
+    Django 6.1.2 and inflated that package's score permanently.
+    """
+    body = {
+        "vulns": [
+            {
+                "id": "GHSA-h95j-h2rv-qrg4",
+                "database_specific": {"severity": "HIGH"},
+                "affected": [
+                    {
+                        "ranges": [
+                            {
+                                "type": "ECOSYSTEM",
+                                "events": [{"introduced": "0"}, {"last_affected": "1.2.7"}],
+                            },
+                            {
+                                "type": "ECOSYSTEM",
+                                "events": [{"introduced": "1.3"}, {"last_affected": "1.3.1"}],
+                            },
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+    rows = osv.parse_response(body, package_name="django", ecosystem="pypi")
+
+    assert len(rows) == 1
+    assert rows[0]["fixed_version"] is None
+    # The highest bound across the ranges, not the first one found.
+    assert rows[0]["last_affected"] == "1.3.1"
+
+
+def test_the_highest_bound_wins_even_when_it_sorts_lower_as_a_string():
+    """"1.10" is below "1.9" as a string and above it as a version."""
+    body = {
+        "vulns": [
+            {
+                "id": "GHSA-order",
+                "affected": [
+                    {
+                        "ranges": [
+                            {"events": [{"last_affected": "1.9"}]},
+                            {"events": [{"last_affected": "1.10"}]},
+                        ]
+                    }
+                ],
+            }
+        ]
+    }
+    assert osv.parse_response(body, package_name="x")[0]["last_affected"] == "1.10"
+
+
+def test_a_published_fix_still_wins_over_a_bound():
+    body = {
+        "vulns": [
+            {
+                "id": "GHSA-fixed",
+                "affected": [{"ranges": [{"events": [{"introduced": "0"}, {"fixed": "2.0.0"}]}]}],
+            }
+        ]
+    }
+    row = osv.parse_response(body, package_name="x")[0]
+    assert row["fixed_version"] == "2.0.0"
+    assert row["last_affected"] is None

@@ -10,6 +10,7 @@ class Settings:
     database_url: str
     raw_dir: Path
     npm_registry: str
+    pypi_registry: str
     osv_api: str
     request_timeout: float
     max_concurrency: int
@@ -23,6 +24,7 @@ class Settings:
             database_url=os.environ.get("DATABASE_URL", "sqlite:///depwatch.db"),
             raw_dir=Path(os.environ.get("RAW_DIR", "data/raw")),
             npm_registry=os.environ.get("NPM_REGISTRY", "https://registry.npmjs.org"),
+            pypi_registry=os.environ.get("PYPI_REGISTRY", "https://pypi.org"),
             osv_api=os.environ.get("OSV_API", "https://api.osv.dev/v1/query"),
             request_timeout=float(os.environ.get("REQUEST_TIMEOUT", "20")),
             max_concurrency=int(os.environ.get("MAX_CONCURRENCY", "8")),

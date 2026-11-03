@@ -34,6 +34,7 @@ from depwatch.db import session_scope
 from depwatch.models import Advisory, IngestRun, Package
 from depwatch.risk import score_package
 from depwatch.seed import prepare_schema, spawn_seed
+from depwatch.sources import normalise_name
 
 log = logging.getLogger("depwatch.api")
 
@@ -162,14 +163,18 @@ class AnalyseResponse(BaseModel):
     summary: dict
 
 
-def requirements_from_manifest(manifest: dict) -> dict[str, str | None]:
-    """{name: range} across the dependency sections of a package.json."""
+def requirements_from_manifest(manifest: dict, ecosystem: str = "npm") -> dict[str, str | None]:
+    """{name: range} across the dependency sections of a manifest.
+
+    Names are normalised for the ecosystem, because they are about to be used
+    as lookup keys against stored rows that were normalised the same way.
+    """
     found: dict[str, str | None] = {}
     for key in MANIFEST_KEYS:
         section = manifest.get(key)
         if isinstance(section, dict):
             for name, spec in section.items():
-                found[name] = spec if isinstance(spec, str) else None
+                found[normalise_name(ecosystem, name)] = spec if isinstance(spec, str) else None
     return found
 
 
@@ -311,9 +316,11 @@ def refresh_status() -> dict:
 
 @app.post("/analyse", response_model=AnalyseResponse)
 def analyse(request: AnalyseRequest) -> AnalyseResponse:
-    requirements: dict[str, str | None] = {name: None for name in request.names}
+    requirements: dict[str, str | None] = {
+        normalise_name(request.ecosystem, name): None for name in request.names
+    }
     if request.manifest:
-        requirements.update(requirements_from_manifest(request.manifest))
+        requirements.update(requirements_from_manifest(request.manifest, request.ecosystem))
 
     if not requirements:
         return AnalyseResponse(analysed=[], unknown=[], summary={"requested": 0})
@@ -341,6 +348,7 @@ def analyse(request: AnalyseRequest) -> AnalyseResponse:
                     "osv_id": advisory.osv_id,
                     "severity": advisory.severity,
                     "fixed_version": advisory.fixed_version,
+                    "last_affected": advisory.last_affected,
                 }
             )
 
@@ -434,6 +442,7 @@ def list_packages(
                     "osv_id": advisory.osv_id,
                     "severity": advisory.severity,
                     "fixed_version": advisory.fixed_version,
+                    "last_affected": advisory.last_affected,
                 }
             )
 

@@ -163,3 +163,45 @@ def test_unknown_current_version_keeps_advisories():
         package(latest_version=None), [advisory("CRITICAL", fixed="1.0.0")], now=NOW
     )
     assert result.score >= 50
+
+
+def test_an_advisory_bounded_from_above_does_not_count_as_unfixed():
+    """The Django case: a 2012 advisory affecting up to 1.3.1 named no fix, so
+    it read as "never fixed" and penalised version 6 forever."""
+    result = score_package(
+        {"name": "django", "latest_version": "6.1.2", "maintainers": 12, "license": "BSD-3-Clause"},
+        [{"osv_id": "GHSA-old", "severity": "HIGH", "fixed_version": None, "last_affected": "1.3.1"}],
+    )
+
+    assert result.score == 0, result.reasons
+    assert not any("no published fix" in r for r in result.reasons)
+
+
+def test_an_advisory_bounded_above_still_counts_below_that_bound():
+    result = score_package(
+        {"name": "django", "latest_version": "1.3.0", "maintainers": 12, "license": "BSD-3-Clause"},
+        [{"osv_id": "GHSA-old", "severity": "HIGH", "fixed_version": None, "last_affected": "1.3.1"}],
+    )
+
+    assert result.score > 0
+    assert any("high severity advisory" in r for r in result.reasons)
+
+
+def test_an_advisory_with_neither_a_fix_nor_a_bound_still_counts():
+    """Genuinely unfixed advisories must keep their penalty."""
+    result = score_package(
+        {"name": "x", "latest_version": "2.0.0", "maintainers": 5, "license": "MIT"},
+        [{"osv_id": "GHSA-open", "severity": "CRITICAL", "fixed_version": None, "last_affected": None}],
+    )
+
+    assert any("no published fix" in r for r in result.reasons)
+
+
+def test_unknown_maintainer_count_is_not_treated_as_single():
+    """PyPI reports no maintainers for organisation-owned projects."""
+    result = score_package(
+        {"name": "django", "latest_version": "6.1.2", "maintainers": None, "license": "BSD-3-Clause"},
+        [],
+    )
+
+    assert not any("single maintainer" in r for r in result.reasons)

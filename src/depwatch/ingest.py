@@ -18,9 +18,15 @@ from depwatch.config import settings
 from depwatch.db import session_scope, upsert_advisories, upsert_packages
 from depwatch.http import RateLimitedClient
 from depwatch.models import IngestRun, Quarantine
-from depwatch.sources import npm, osv
+from depwatch.sources import normalise_name, npm, osv, pypi, source_for
 
 log = logging.getLogger("depwatch.ingest")
+
+def registry_for(ecosystem: str) -> str:
+    return {
+        npm.ECOSYSTEM: settings.npm_registry,
+        pypi.ECOSYSTEM: settings.pypi_registry,
+    }[ecosystem]
 
 
 def raw_path(root: Path, source: str, run_id: int, when: datetime | None = None) -> Path:
@@ -37,13 +43,16 @@ def write_raw(path: Path, records: list[dict]) -> Path:
     return path
 
 
-async def fetch_all(client: RateLimitedClient, registry: str, names: list[str]) -> dict:
+async def fetch_all(
+    client: RateLimitedClient, registry: str, names: list[str], ecosystem: str = "npm"
+) -> dict:
     """Fetch every package concurrently; keep failures instead of raising."""
+    source = source_for(ecosystem)
     results: dict[str, dict | Exception] = {}
 
     async def one(name: str) -> None:
         try:
-            results[name] = await client.get_json(npm.package_url(registry, name))
+            results[name] = await client.get_json(source.package_url(registry, name))
         except Exception as exc:  # noqa: BLE001 - recorded on the run, not swallowed
             results[name] = exc
 
@@ -51,31 +60,38 @@ async def fetch_all(client: RateLimitedClient, registry: str, names: list[str]) 
     return results
 
 
-async def ingest_npm(
+async def ingest_packages(
     names: list[str],
     *,
+    ecosystem: str = npm.ECOSYSTEM,
     client: RateLimitedClient | None = None,
     db_url: str | None = None,
     raw_dir: Path | None = None,
 ) -> dict:
-    """Ingest a list of npm packages. Returns a summary of the run."""
+    """Ingest a list of packages from one ecosystem. Returns a run summary.
+
+    The body is ecosystem-agnostic: everything registry-specific lives in the
+    source module, which is the point. The only thing that changed when PyPI
+    was added was the lookup at the top.
+    """
+    source = source_for(ecosystem)
     owns_client = client is None
     client = client or RateLimitedClient()
     root = Path(raw_dir or settings.raw_dir)
 
     with session_scope(db_url) as session:
-        run = IngestRun(source=npm.ECOSYSTEM, requested=len(names))
+        run = IngestRun(source=ecosystem, requested=len(names))
         session.add(run)
         session.flush()  # assigns run.id
         run_id = run.id
 
     log.info(
         "ingest run started",
-        extra={"run_id": run_id, "source": npm.ECOSYSTEM, "requested": len(names)},
+        extra={"run_id": run_id, "source": ecosystem, "requested": len(names)},
     )
 
     try:
-        fetched = await fetch_all(client, settings.npm_registry, names)
+        fetched = await fetch_all(client, registry_for(ecosystem), names, ecosystem)
     finally:
         if owns_client:
             await client.aclose()
@@ -83,24 +99,24 @@ async def ingest_npm(
     documents = {n: d for n, d in fetched.items() if isinstance(d, dict)}
     failures = {n: e for n, e in fetched.items() if not isinstance(e, dict)}
 
-    write_raw(raw_path(root, npm.ECOSYSTEM, run_id), list(documents.values()))
+    write_raw(raw_path(root, ecosystem, run_id), list(documents.values()))
 
     for name, error in failures.items():
         log.warning(
             "fetch failed",
-            extra={"run_id": run_id, "source": npm.ECOSYSTEM, "package": name,
+            extra={"run_id": run_id, "source": ecosystem, "package": name,
                    "error": str(error)[:200]},
         )
 
     rows, bad = [], []
     for name, document in documents.items():
         try:
-            rows.append(npm.parse(document).to_row())
+            rows.append(source.parse(document).to_row())
         except ValidationError as exc:
             bad.append((name, str(exc), document))
             log.warning(
                 "record quarantined",
-                extra={"run_id": run_id, "source": npm.ECOSYSTEM, "package": name,
+                extra={"run_id": run_id, "source": ecosystem, "package": name,
                        "reason": str(exc)[:200]},
             )
 
@@ -110,7 +126,7 @@ async def ingest_npm(
             session.add(
                 Quarantine(
                     run_id=run_id,
-                    source=npm.ECOSYSTEM,
+                    source=ecosystem,
                     key=name,
                     reason=reason,
                     payload=payload,
@@ -132,8 +148,15 @@ async def ingest_npm(
         "quarantined": len(bad),
         "failed": len(failures),
     }
-    log.info("ingest run finished", extra={"source": npm.ECOSYSTEM, **summary})
+    log.info("ingest run finished", extra={"source": ecosystem, **summary})
     return summary
+
+
+async def ingest_npm(names: list[str], **kwargs) -> dict:
+    """The npm case of `ingest_packages`. Kept because it reads better at call
+    sites that only ever mean npm, and because the CLI and seed set predate the
+    second ecosystem."""
+    return await ingest_packages(names, ecosystem=npm.ECOSYSTEM, **kwargs)
 
 
 async def ingest_advisories(
@@ -164,6 +187,12 @@ async def ingest_advisories(
         "ingest run started",
         extra={"run_id": run_id, "source": "osv", "requested": len(names)},
     )
+
+    # Normalised before the query, so the advisory rows are keyed the same way
+    # the package rows are. Getting this wrong meant PyPI advisories were stored
+    # under `django` while the package sat under `Django`, and the two never
+    # joined - see sources/__init__.py.
+    names = [normalise_name(ecosystem, n) for n in names]
 
     responses: dict[str, object] = {}
     try:

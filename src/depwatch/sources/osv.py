@@ -11,7 +11,12 @@ Shapes worth knowing, confirmed against the live API:
   and is only present on GitHub-reviewed advisories;
 * `severity` is a list of CVSS vectors, type CVSS_V3 or CVSS_V4;
 * the fixed version lives several levels down, in
-  affected[].ranges[].events[].fixed, and may be absent when no fix exists.
+  affected[].ranges[].events[].fixed, and may be absent when no fix exists;
+* an advisory may instead state `last_affected` - the highest version it
+  affects - with no `fixed` event at all. Reading only `fixed` recorded those
+  as "no published fix", so GHSA-h95j-h2rv-qrg4, which affects Django up to
+  1.3.1, counted against Django 6.1.2 and every future release. Any advisory
+  written that way permanently inflated the score of the package it named.
 """
 
 from datetime import datetime
@@ -50,6 +55,30 @@ def _fixed_version(vuln: dict) -> str | None:
     return None
 
 
+def _last_affected(vuln: dict) -> str | None:
+    """The highest version an advisory affects, when it names no fix.
+
+    Some advisories bound themselves from above instead of pointing at a fix.
+    The *highest* such bound is taken, because the advisory may list several
+    affected ranges and anything above all of them is out of scope.
+    """
+    bounds = [
+        event["last_affected"]
+        for affected in vuln.get("affected") or []
+        for rng in affected.get("ranges") or []
+        for event in rng.get("events") or []
+        if event.get("last_affected")
+    ]
+    if not bounds:
+        return None
+    # String comparison would put "1.10" below "1.9", so compare parsed.
+    from depwatch.versions import parse
+
+    parsed = [(parse(b), b) for b in bounds]
+    comparable = [(p, b) for p, b in parsed if p is not None]
+    return max(comparable)[1] if comparable else bounds[0]
+
+
 def _published(vuln: dict) -> datetime | None:
     value = vuln.get("published")
     if not isinstance(value, str):
@@ -71,6 +100,7 @@ def parse_vuln(vuln: dict, *, package_name: str, ecosystem: str = "npm") -> dict
         "summary": vuln.get("summary") or vuln.get("details"),
         "aliases": vuln.get("aliases") or [],
         "fixed_version": _fixed_version(vuln),
+        "last_affected": _last_affected(vuln),
         "published_at": _published(vuln),
     }
 
