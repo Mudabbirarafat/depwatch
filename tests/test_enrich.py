@@ -259,3 +259,29 @@ async def test_a_successful_run_records_no_error(db, mock_client):
         run = session.scalars(select(IngestRun).where(IngestRun.source == "github")).one()
         assert run.status == "succeeded"
         assert run.error is None
+
+
+async def test_a_rejected_token_stops_the_run_with_one_clear_reason(db, mock_client):
+    """The live failure: fifteen packages, fifteen identical 401s, and an
+    error field that said nothing actionable.
+
+    Bad credentials are a property of the run, not of any package, so the
+    first one stops it and the reason says what to do.
+    """
+    for i in range(5):
+        add(f"p{i}", f"https://github.com/owner/p{i}")
+
+    def unauthorised(request):
+        return httpx.Response(401, json={"message": "Bad credentials"})
+
+    summary = await enrich_github(client=mock_client(unauthorised))
+
+    assert summary["bad_credentials"] is True
+    assert summary["enriched"] == 0
+
+    with session_scope() as session:
+        run = session.scalars(select(IngestRun).where(IngestRun.source == "github")).one()
+        assert "GITHUB_TOKEN was rejected" in run.error
+        assert "Regenerate it" in run.error
+        # One cause, not five copies of it.
+        assert run.error.count("401") <= 1

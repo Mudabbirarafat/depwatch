@@ -37,19 +37,32 @@ UNAUTHENTICATED_BUDGET = 60
 
 
 class _Budget:
-    """Whether the rate limit has been exhausted mid-run.
+    """Whether the run should stop asking GitHub anything else.
 
-    Checked before each request rather than after, so once GitHub says the
-    budget is gone the remaining packages are skipped instead of each one
-    discovering it again.
+    Two reasons it should, and both are properties of the run rather than of
+    the package being fetched - so they are checked before each request, and
+    the remaining packages are skipped rather than each rediscovering the same
+    thing:
+
+    * the rate limit is exhausted;
+    * the credentials are bad, which produced fifteen identical 401s on the
+      deployed instance before this existed. One cause, reported once.
     """
 
     def __init__(self) -> None:
         self.exhausted = False
         self.reset_at: str | None = None
+        self.bad_credentials = False
+
+    @property
+    def stop(self) -> bool:
+        return self.exhausted or self.bad_credentials
 
     def note(self, error: FetchError) -> bool:
-        """True if this failure was the rate limit rather than the package."""
+        """True if this failure was about the run rather than the package."""
+        if error.status == 401:
+            self.bad_credentials = True
+            return True
         remaining = error.headers.get("x-ratelimit-remaining")
         if error.status in (403, 429) and remaining == "0":
             self.exhausted = True
@@ -85,8 +98,8 @@ async def _one(
     owner: str,
     repo: str,
 ) -> dict | None:
-    if budget.exhausted:
-        failures[name] = "skipped: rate limit already exhausted"
+    if budget.stop:
+        failures[name] = "skipped: the run already stopped"
         return None
 
     sent = github.headers()
@@ -94,8 +107,17 @@ async def _one(
         document = await client.get_json(github.repo_url(owner, repo), headers=sent)
     except FetchError as exc:
         if budget.note(exc):
-            failures[name] = f"rate limited; resets at {budget.reset_at}"
-            log.warning("github rate limit exhausted", extra={"reset_at": budget.reset_at})
+            if budget.bad_credentials:
+                failures[name] = "GITHUB_TOKEN rejected"
+                log.error(
+                    "github rejected the token; enrichment cannot run",
+                    extra={"status": exc.status},
+                )
+            else:
+                failures[name] = f"rate limited; resets at {budget.reset_at}"
+                log.warning(
+                    "github rate limit exhausted", extra={"reset_at": budget.reset_at}
+                )
         elif exc.status == 404:
             # The registry points at a repository that is gone or private.
             # Worth knowing, not worth failing a run over.
@@ -118,7 +140,7 @@ async def _one(
         return None
 
     contributors = None
-    if not budget.exhausted:
+    if not budget.stop:
         try:
             fetched = await client.get_with_headers(
                 github.contributors_url(owner, repo), headers=sent
@@ -208,7 +230,16 @@ async def enrich_github(
         run.failed = len(targets) - len(rows)
         run.finished_at = datetime.now(UTC)
         run.status = "succeeded" if len(rows) == len(targets) else "partial"
-        if budget.exhausted:
+        if budget.bad_credentials:
+            run.status = "partial"
+            # One sentence someone can act on, rather than fifteen copies of
+            # the same rejection.
+            run.error = (
+                "GITHUB_TOKEN was rejected by GitHub (401 Bad credentials). "
+                "Regenerate it and set it again; no scopes are needed for "
+                "public repositories."
+            )
+        elif budget.exhausted:
             run.status = "partial"
             run.error = f"github rate limit exhausted; resets at {budget.reset_at}"
         elif failures:
@@ -223,6 +254,7 @@ async def enrich_github(
         "enriched": len(rows),
         "archived": sum(1 for r in rows if r["repo_archived"]),
         "rate_limited": budget.exhausted,
+        "bad_credentials": budget.bad_credentials,
     }
     log.info("enrichment finished", extra={"source": SOURCE, **summary})
     return summary
