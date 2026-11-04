@@ -191,3 +191,48 @@ def test_healthz_does_not_fail_just_because_the_data_is_stale(db):
 
     assert client.get("/gates").status_code == 503
     assert client.get("/healthz").status_code == 200
+
+
+def test_an_enrichment_run_is_not_judged_as_ingestion(db):
+    """Found in production: a GitHub enrichment run where every package failed
+    took the live gates to 503, over data that was perfectly fine.
+
+    These gates ask whether the warehouse is being filled correctly.
+    Enrichment answers a different question and has a different idea of
+    failure - a package hosted on GitLab, a deleted repository, an exhausted
+    API budget - so it must not set the ingestion thresholds.
+    """
+    add_data()
+    add_run(finished_at=NOW - timedelta(hours=2), requested=10, succeeded=10, failed=0)
+    rescore()
+    # ... and then an enrichment run where everything failed, more recently.
+    with session_scope() as session:
+        session.add(
+            IngestRun(
+                source="github", status="partial", finished_at=NOW - timedelta(minutes=5),
+                requested=15, succeeded=0, failed=15,
+            )
+        )
+
+    report = evaluate(now=NOW)
+
+    assert report["passed"] is True, report["gates"]
+    assert gate(report, "failures_within_limit")["passed"] is True
+    assert report["last_finished_run"]["source"] == "npm"
+
+
+def test_a_failing_ingest_run_is_still_caught_behind_an_enrichment_run(db):
+    """The exclusion must not become a way for a real failure to hide."""
+    add_data()
+    add_run(finished_at=NOW - timedelta(hours=2), requested=10, succeeded=2, failed=8)
+    rescore()
+    with session_scope() as session:
+        session.add(
+            IngestRun(
+                source="github", status="succeeded", finished_at=NOW - timedelta(minutes=5),
+                requested=5, succeeded=5, failed=0,
+            )
+        )
+
+    report = evaluate(now=NOW)
+    assert gate(report, "failures_within_limit")["passed"] is False

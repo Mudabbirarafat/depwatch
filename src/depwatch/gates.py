@@ -30,6 +30,16 @@ DEFAULT_MAX_QUARANTINE_RATE = 0.1
 # A run that finished is evidence; a run still in flight is not.
 FINISHED_STATUSES = ("succeeded", "partial")
 
+# Sources that enrich rather than ingest.
+#
+# These gates ask "is the warehouse being filled correctly", and enrichment
+# answers a different question with a different idea of failure: a package
+# hosted on GitLab, a deleted repository, an exhausted API budget. Those are
+# expected, and judging them by the ingestion thresholds took the whole site
+# to 503 over data that was perfectly fine. Found in production, by exactly
+# that happening.
+ENRICHMENT_SOURCES = ("github",)
+
 
 @dataclass(frozen=True)
 class Gate:
@@ -79,7 +89,11 @@ def evaluate(now: datetime | None = None) -> dict:
         )
         last_finished = session.scalars(
             select(IngestRun)
-            .where(IngestRun.status.in_(FINISHED_STATUSES), IngestRun.finished_at.is_not(None))
+            .where(
+                IngestRun.status.in_(FINISHED_STATUSES),
+                IngestRun.finished_at.is_not(None),
+                IngestRun.source.not_in(ENRICHMENT_SOURCES),
+            )
             .order_by(IngestRun.finished_at.desc())
             .limit(1)
         ).first()

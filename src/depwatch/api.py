@@ -272,6 +272,13 @@ def healthz() -> dict:
                     "source": last.source,
                     "status": last.status,
                     "finished_at": last.finished_at.isoformat() if last.finished_at else None,
+                    # A run can finish "partial" for a dozen reasons and
+                    # without this there is nowhere to read which one. The
+                    # field is already truncated to the first few failures.
+                    "error": last.error,
+                    "requested": last.requested,
+                    "succeeded": last.succeeded,
+                    "failed": last.failed,
                 }
                 if last
                 else None
