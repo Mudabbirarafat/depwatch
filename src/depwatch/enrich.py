@@ -79,12 +79,14 @@ def enrichable(ecosystem: str | None = None, db_url: str | None = None) -> list[
 async def _one(
     client: RateLimitedClient,
     budget: _Budget,
+    failures: dict[str, str],
     eco: str,
     name: str,
     owner: str,
     repo: str,
 ) -> dict | None:
     if budget.exhausted:
+        failures[name] = "skipped: rate limit already exhausted"
         return None
 
     sent = github.headers()
@@ -92,21 +94,26 @@ async def _one(
         document = await client.get_json(github.repo_url(owner, repo), headers=sent)
     except FetchError as exc:
         if budget.note(exc):
+            failures[name] = f"rate limited; resets at {budget.reset_at}"
             log.warning("github rate limit exhausted", extra={"reset_at": budget.reset_at})
         elif exc.status == 404:
             # The registry points at a repository that is gone or private.
             # Worth knowing, not worth failing a run over.
+            failures[name] = f"{owner}/{repo} not found"
             log.info("repository not found", extra={"package": name, "repo": f"{owner}/{repo}"})
         else:
+            failures[name] = f"HTTP {exc.status} for {owner}/{repo}: {str(exc)[:120]}"
             log.warning(
                 "repository fetch failed",
-                extra={"package": name, "repo": f"{owner}/{repo}", "status": exc.status},
+                extra={"package": name, "repo": f"{owner}/{repo}", "status": exc.status,
+                       "detail": str(exc)[:200]},
             )
         return None
 
     try:
         repository = github.parse_repo(document)
     except ValidationError as exc:
+        failures[name] = f"unusable payload for {owner}/{repo}"
         log.warning("repository payload unusable", extra={"package": name, "reason": str(exc)[:200]})
         return None
 
@@ -172,9 +179,10 @@ async def enrich_github(
     owns_client = client is None
     client = client or RateLimitedClient()
     budget = _Budget()
+    failures: dict[str, str] = {}
     try:
         results = await asyncio.gather(
-            *(_one(client, budget, *target) for target in targets)
+            *(_one(client, budget, failures, *target) for target in targets)
         )
     finally:
         if owns_client:
@@ -203,6 +211,11 @@ async def enrich_github(
         if budget.exhausted:
             run.status = "partial"
             run.error = f"github rate limit exhausted; resets at {budget.reset_at}"
+        elif failures:
+            # A run where everything failed used to record no reason at all,
+            # which made diagnosing it a matter of reading logs by hand. The
+            # ingest runs have always done this; this one should too.
+            run.error = "; ".join(f"{n}: {why}" for n, why in list(failures.items())[:5])
 
     summary = {
         "run_id": run_id,

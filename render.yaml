@@ -66,6 +66,13 @@ services:
       - key: GITHUB_TOKEN
         sync: false
 
+      # Structured logs, which is the whole reason the JSON formatter exists.
+      # Without this the platform got the text formatter, which drops every
+      # `extra` field - so a run that failed fifteen times logged fifteen
+      # identical lines saying nothing about why.
+      - key: LOG_FORMAT
+        value: json
+
       # The freshness gate allows a daily schedule one missed run.
       - key: MAX_DATA_AGE_HOURS
         value: "50"

@@ -214,3 +214,48 @@ def test_the_scorer_actually_receives_the_signals(db):
     assert row["repo_archived"] is True
     assert row["repo_contributors"] == 1
     assert row["repo_pushed_at"] is not None
+
+
+async def test_a_run_that_fails_records_why(db, mock_client):
+    """A run where every package failed used to record no reason at all.
+
+    `status: partial, succeeded: 0, failed: 15, error: null` is not a
+    diagnosis, and it made a live failure a matter of reading logs by hand.
+    The ingest runs have always recorded their failures; this one does now.
+    """
+    add("a", "https://github.com/owner/a")
+    add("gone", "https://github.com/owner/gone")
+
+    await enrich_github(client=mock_client(responder({}, missing={"owner/a", "owner/gone"})))
+
+    with session_scope() as session:
+        run = session.scalars(select(IngestRun).where(IngestRun.source == "github")).one()
+        assert run.succeeded == 0
+        assert run.failed == 2
+        assert run.error is not None
+        assert "not found" in run.error
+
+
+async def test_a_rate_limited_run_says_so_rather_than_listing_packages(db, mock_client):
+    """One cause, not fifteen symptoms."""
+    for i in range(3):
+        add(f"p{i}", f"https://github.com/owner/p{i}")
+
+    await enrich_github(
+        client=mock_client(responder({}, rate_limited={f"owner/p{i}" for i in range(3)}))
+    )
+
+    with session_scope() as session:
+        run = session.scalars(select(IngestRun).where(IngestRun.source == "github")).one()
+        assert "rate limit exhausted" in run.error
+
+
+async def test_a_successful_run_records_no_error(db, mock_client):
+    add("a", "https://github.com/owner/a")
+
+    await enrich_github(client=mock_client(responder({"owner/a": {"contributors": 1}})))
+
+    with session_scope() as session:
+        run = session.scalars(select(IngestRun).where(IngestRun.source == "github")).one()
+        assert run.status == "succeeded"
+        assert run.error is None
