@@ -23,6 +23,38 @@ def clean_state():
     refresh_module.state.running = False
 
 
+@pytest.fixture(autouse=True)
+def no_ambient_token(monkeypatch):
+    """Whether enrichment is reached must not depend on the developer's shell.
+
+    `refresh` decides by reading GITHUB_TOKEN out of the environment, so an
+    exported token would quietly turn these into tests that call
+    api.github.com for real.
+    """
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+
+@pytest.fixture
+def stubbed(monkeypatch):
+    """The registries and the enricher, stubbed. Returns the enrichment calls."""
+    calls: list = []
+
+    async def fake_npm(names, **kwargs):
+        return {"succeeded": len(names), "failed": 0}
+
+    async def fake_osv(names, **kwargs):
+        return {"advisories": 0, "failed": 0}
+
+    async def fake_enrich(*args, **kwargs):
+        calls.append(args)
+        return {"requested": 0, "enriched": 0}
+
+    monkeypatch.setattr(refresh_module, "ingest_npm", fake_npm)
+    monkeypatch.setattr(refresh_module, "ingest_advisories", fake_osv)
+    monkeypatch.setattr(refresh_module, "enrich_github", fake_enrich)
+    return calls
+
+
 def add(*names, ecosystem="npm"):
     with session_scope() as session:
         for name in names:
@@ -60,6 +92,33 @@ async def test_an_empty_warehouse_falls_back_to_the_seed_set(db, monkeypatch):
 
     await refresh()
     assert asked == [SEED_PACKAGES]
+
+
+async def test_enrichment_is_skipped_without_a_token(db, stubbed):
+    """How the deployed instance runs, deliberately.
+
+    Skipping is not failing: the rest of the refresh completes and the summary
+    says the step did not run, so a configuration choice cannot be mistaken
+    later for a GitHub outage.
+    """
+    add("lodash")
+
+    summary = await refresh()
+
+    assert stubbed == [], "enrichment should not have been attempted"
+    assert summary["enriched"] is None
+    assert summary["packages"]["succeeded"] == 1
+
+
+async def test_enrichment_runs_when_a_token_is_configured(db, stubbed, monkeypatch):
+    """The other half of the same switch, so "off" is a choice and not a bug."""
+    monkeypatch.setenv("GITHUB_TOKEN", "a-test-token")
+    add("lodash")
+
+    summary = await refresh()
+
+    assert len(stubbed) == 1
+    assert summary["enriched"] is not None
 
 
 async def test_a_failing_refresh_is_recorded_not_raised(db, monkeypatch):

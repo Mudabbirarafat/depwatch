@@ -58,11 +58,20 @@ services:
       - key: REFRESH_TOKEN
         generateValue: true
 
-      # Optional. GitHub enrichment - archived repositories, last commit,
-      # contributor counts - is skipped entirely without one, because
-      # unauthenticated GitHub allows 60 requests an hour and each package
-      # costs two. Set it in the dashboard to turn enrichment on; a read-only
-      # token with no scopes is enough for public repositories.
+      # Optional, and deliberately left empty on the deployed instance.
+      #
+      # GitHub enrichment - archived repositories, last commit, contributor
+      # counts - is skipped entirely without one, because unauthenticated
+      # GitHub allows 60 requests an hour and each package costs two. `refresh`
+      # logs that it skipped the step rather than failing, and the quality
+      # gates judge ingestion, so an instance with no token is healthy and not
+      # degraded.
+      #
+      # The enrichment path is covered on every push by the live-smoke job,
+      # using the runner's own token, which is why the demo does not need to
+      # hold a credential of its own. To turn it on here anyway, set the value
+      # in the dashboard: a read-only token with no scopes is enough for
+      # public repositories.
       - key: GITHUB_TOKEN
         sync: false
 

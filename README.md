@@ -18,7 +18,9 @@ request after a quiet spell takes about fifty seconds to wake it.
 > deployed with migrations, bounded endpoints and a logged ingestion path,
 > it refreshes on a schedule behind freshness and quality gates, and the
 > dashboard in front of it is a typed React application. Two ecosystems, npm
-> and PyPI, enriched with GitHub maintenance signals. dbt marts are next.
+> and PyPI. GitHub enrichment is implemented and proved against live GitHub on
+> every push, but the deployed demo runs without it — see *Known limitations*.
+> dbt marts are next.
 
 ## Pipeline
 
@@ -295,9 +297,17 @@ Stated here rather than discovered by you:
   Bitbucket, a personal host — and 45 declare no repository at all. The rest
   are scored without those signals rather than guessed at. GitLab and
   Bitbucket are not implemented.
-- **Enrichment needs a token.** Unauthenticated GitHub allows 60 requests an
-  hour and each package costs two, so without `GITHUB_TOKEN` the run caps
-  itself at thirty packages and says so. With one it is 5,000 an hour.
+- **Enrichment is off on the deployed demo**, so the live dashboard shows
+  registry and advisory signals only. It needs a token: unauthenticated GitHub
+  allows 60 requests an hour and each package costs two, so without
+  `GITHUB_TOKEN` a run caps itself at thirty packages and says so; with one it
+  is 5,000 an hour. The instance deliberately has none — a long-lived
+  credential on a free public box is a thing to rotate and a thing to leak, and
+  it buys the demo nothing the `live-smoke` job does not already prove on every
+  push with the runner's own token, down to asserting the signals reach the
+  scorer. `refresh()` skips the step and logs that it skipped it, and the
+  quality gates judge ingestion, so an instance with no token is a healthy one
+  rather than a degraded one.
 - **Issue responsiveness is still missing.** Open issue counts are stored but
   unused: a high count means a popular project as often as a neglected one,
   and the useful version — time to first response — needs the issues API and a
